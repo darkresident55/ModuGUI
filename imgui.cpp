@@ -1,6 +1,6 @@
 // dear imgui, v1.92.5 WIP
 // ModuGUI Fork V1.0
-// (main code and documentation)
+// (ImGui main code and documentation)
 
 // Help:
 // - See links below.
