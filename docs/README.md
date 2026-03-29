@@ -1,3 +1,23 @@
+# ModuGUI (Dear ImGui Fork)
+=====
+
+> This repository is a customized fork of Dear ImGui used as the UI backend for the Modularity Engine.
+
+## About this fork
+This fork is used internally by the Modularity engine to power its editor UI system (ModuGUI).
+
+It includes:
+- Custom UI extensions (e.g. vertical separators, toolbar helpers, layout improvements)
+- Modularity-specific behavior for editor workflows
+- Adjustments for integration with ModuGUI (engine-facing UI layer)
+
+This is **not a drop-in replacement for upstream Dear ImGui** and may diverge from the original project.
+
+For the original project, see:
+https://github.com/ocornut/imgui
+
+---
+
 Dear ImGui
 =====
 
