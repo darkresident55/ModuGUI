@@ -9328,15 +9328,11 @@ bool ImGui::BeginMenuEx(const char* label, const char* icon, bool enabled)
     IMGUI_TEST_ENGINE_ITEM_INFO(id, label, g.LastItemData.StatusFlags | ImGuiItemStatusFlags_Openable | (menu_is_open ? ImGuiItemStatusFlags_Opened : 0));
     PopID();
 
-    if (want_open && !menu_is_open && g.OpenPopupStack.Size > g.BeginPopupStack.Size)
+    if (want_open)
     {
-        // Don't reopen/recycle same menu level in the same frame if it is a different menu ID, first close the other menu and yield for a frame.
-        OpenPopup(label);
-    }
-    else if (want_open)
-    {
+        const bool replacing_menu_at_same_level = !menu_is_open && g.OpenPopupStack.Size > g.BeginPopupStack.Size;
         menu_is_open = true;
-        OpenPopup(label, ImGuiPopupFlags_NoReopen);// | (want_open_nav_init ? ImGuiPopupFlags_NoReopenAlwaysNavInit : 0));
+        OpenPopup(label, replacing_menu_at_same_level ? ImGuiPopupFlags_None : ImGuiPopupFlags_NoReopen);// | (want_open_nav_init ? ImGuiPopupFlags_NoReopenAlwaysNavInit : 0));
     }
 
     if (menu_is_open)

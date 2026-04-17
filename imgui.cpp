@@ -8750,13 +8750,14 @@ static float AnimatedModalPopupAlpha(const ImGuiPopupData& popup)
 
 static ImVec2 AnimatedPopupOffset(const ImGuiWindow* window, const ImGuiPopupData& popup)
 {
-    if (!window || (window->Flags & ImGuiWindowFlags_ChildMenu) == 0)
-        return ImVec2(0.0f, 0.0f);
-
     const float visibility = ImSaturate(popup.PopupAnimVisibility);
     const float phase = popup.PopupAnimClosing
         ? AnimatedModalPopupEaseOutCubic(1.0f - visibility)
         : (1.0f - AnimatedModalPopupEaseOutCubic(visibility));
+
+    ImVec2 offset = popup.PopupAnimHandoffOffset * phase;
+    if (!window || (window->Flags & ImGuiWindowFlags_ChildMenu) == 0)
+        return offset;
 
     float side = 0.0f;
     if (window->AutoPosLastDirection == ImGuiDir_Right)
@@ -8768,7 +8769,8 @@ static ImVec2 AnimatedPopupOffset(const ImGuiWindow* window, const ImGuiPopupDat
     else
         side = 1.0f;
 
-    return ImVec2(-side * phase * 22.0f, 0.0f);
+    offset.x += -side * phase * 22.0f;
+    return offset;
 }
 
 static void TransformAnimatedModalPopupDrawList(ImGuiWindow* window, const ImGuiPopupData& popup)
@@ -12989,6 +12991,7 @@ void ImGui::OpenPopupEx(ImGuiID id, ImGuiPopupFlags popup_flags)
     popup_ref.OpenParentId = parent_window->IDStack.back();
     popup_ref.OpenPopupPos = NavCalcPreferredRefPos();
     popup_ref.OpenMousePos = IsMousePosValid(&g.IO.MousePos) ? g.IO.MousePos : popup_ref.OpenPopupPos;
+    popup_ref.PopupAnimHandoffOffset = ImVec2(0.0f, 0.0f);
     popup_ref.PopupAnimVisibility = 0.0f;
     popup_ref.PopupAnimClosing = false;
     popup_ref.PopupAnimRestoreFocus = false;
@@ -13016,6 +13019,18 @@ void ImGui::OpenPopupEx(ImGuiID id, ImGuiPopupFlags popup_flags)
         }
         else
         {
+            if (g.OpenPopupStack.Size > current_stack_size)
+            {
+                const ImGuiPopupData& previous_popup = g.OpenPopupStack[current_stack_size];
+                if (previous_popup.Window != NULL)
+                {
+                    const ImVec2 source_center = previous_popup.Window->Rect().GetCenter();
+                    const ImVec2 target_center = popup_ref.OpenPopupPos;
+                    const ImVec2 handoff = (source_center - target_center) * 0.18f;
+                    popup_ref.PopupAnimHandoffOffset.x = ImClamp(handoff.x, -32.0f, 32.0f);
+                    popup_ref.PopupAnimHandoffOffset.y = ImClamp(handoff.y, -18.0f, 18.0f);
+                }
+            }
             // Reopen: close child popups if any, then flag popup for open/reopen (set position, focus, init navigation)
             ClosePopupToLevel(current_stack_size, true);
             if (g.OpenPopupStack.Size > current_stack_size)

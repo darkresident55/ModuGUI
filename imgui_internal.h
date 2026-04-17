@@ -1489,6 +1489,7 @@ struct ImGuiPopupData
     ImGuiID             OpenParentId;   // Set on OpenPopup(), we need this to differentiate multiple menu sets from each others (e.g. inside menu bar vs loose menu items)
     ImVec2              OpenPopupPos;   // Set on OpenPopup(), preferred popup position (typically == OpenMousePos when using mouse)
     ImVec2              OpenMousePos;   // Set on OpenPopup(), copy of mouse position at the time of opening popup
+    ImVec2              PopupAnimHandoffOffset; // Initial slide offset used when replacing another popup/menu at the same depth
     float               PopupAnimVisibility; // 0.0..1.0 visibility for animated popups
     bool                PopupAnimClosing; // True while an animated popup is exiting
     bool                PopupAnimRestoreFocus; // Restore focus when delayed close completes
