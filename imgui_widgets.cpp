@@ -102,6 +102,36 @@ Index of this file:
 static const float          DRAGDROP_HOLD_TO_OPEN_TIMER = 0.70f;    // Time for drag-hold to activate items accepting the ImGuiButtonFlags_PressedOnDragDropHold button behavior.
 static const float          DRAG_MOUSE_THRESHOLD_FACTOR = 0.50f;    // Multiplier for the default value of io.MouseDragThreshold to make DragFloat/DragInt react faster to mouse drags.
 
+static float AnimateWidgetScalar(float current, float target, float speed, float dt)
+{
+    const float blend = 1.0f - expf(-speed * dt);
+    return ImLerp(current, target, ImSaturate(blend));
+}
+
+static ImRect ScaleRectAroundCenter(const ImRect& rect, float scale)
+{
+    const ImVec2 center = rect.GetCenter();
+    const ImVec2 half_extent = rect.GetSize() * (0.5f * scale);
+    return ImRect(center - half_extent, center + half_extent);
+}
+
+static void TransformDrawListVertsRange(ImDrawList* draw_list, int vtx_start, const ImVec2& center, float scale, float alpha)
+{
+    if (!draw_list || vtx_start < 0 || vtx_start >= draw_list->VtxBuffer.Size)
+        return;
+    for (int i = vtx_start; i < draw_list->VtxBuffer.Size; ++i)
+    {
+        ImDrawVert& vertex = draw_list->VtxBuffer[i];
+        vertex.pos = center + (vertex.pos - center) * scale;
+        if (alpha < 0.999f)
+        {
+            const ImU32 a = (vertex.col >> IM_COL32_A_SHIFT) & 0xFF;
+            const ImU32 scaled_a = (ImU32)ImClamp((int)(a * alpha), 0, 255);
+            vertex.col = (vertex.col & ~IM_COL32_A_MASK) | (scaled_a << IM_COL32_A_SHIFT);
+        }
+    }
+}
+
 // Those MIN/MAX values are not define because we need to point to them
 static const signed char    IM_S8_MIN  = -128;
 static const signed char    IM_S8_MAX  = 127;
@@ -1270,20 +1300,43 @@ bool ImGui::Checkbox(const char* label, bool* v)
     const bool mixed_value = (g.LastItemData.ItemFlags & ImGuiItemFlags_MixedValue) != 0;
     if (is_visible)
     {
+        ImGuiStorage* storage = window->DC.StateStorage;
+        float* hover_anim = storage->GetFloatRef(id ^ 0x3B49A001, hovered ? 1.0f : 0.0f);
+        float* held_anim = storage->GetFloatRef(id ^ 0x3B49A002, held ? 1.0f : 0.0f);
+        float* mark_anim = storage->GetFloatRef(id ^ 0x3B49A003, *v ? 1.0f : 0.0f);
+        *hover_anim = AnimateWidgetScalar(*hover_anim, hovered ? 1.0f : 0.0f, 18.0f, g.IO.DeltaTime);
+        *held_anim = AnimateWidgetScalar(*held_anim, held ? 1.0f : 0.0f, 24.0f, g.IO.DeltaTime);
+        *mark_anim = AnimateWidgetScalar(*mark_anim, *v ? 1.0f : 0.0f, *v ? 18.0f : 14.0f, g.IO.DeltaTime);
+
+        const float hover_t = ImSaturate(*hover_anim);
+        const float held_t = ImSaturate(*held_anim);
+        const float mark_t = ImSaturate(*mark_anim);
+        const float box_scale = 1.0f + hover_t * 0.055f + held_t * 0.035f;
+        const ImRect animated_check_bb = ScaleRectAroundCenter(check_bb, box_scale);
+
         RenderNavCursor(total_bb, id);
-        RenderFrame(check_bb.Min, check_bb.Max, GetColorU32((held && hovered) ? ImGuiCol_FrameBgActive : hovered ? ImGuiCol_FrameBgHovered : ImGuiCol_FrameBg), true, style.FrameRounding);
+        RenderFrame(animated_check_bb.Min, animated_check_bb.Max,
+                    GetColorU32((held && hovered) ? ImGuiCol_FrameBgActive : hovered ? ImGuiCol_FrameBgHovered : ImGuiCol_FrameBg),
+                    true, style.FrameRounding * box_scale);
         ImU32 check_col = GetColorU32(ImGuiCol_CheckMark);
         if (mixed_value)
         {
             // Undocumented tristate/mixed/indeterminate checkbox (#2644)
             // This may seem awkwardly designed because the aim is to make ImGuiItemFlags_MixedValue supported by all widgets (not just checkbox)
             ImVec2 pad(ImMax(1.0f, IM_TRUNC(square_sz / 3.6f)), ImMax(1.0f, IM_TRUNC(square_sz / 3.6f)));
-            window->DrawList->AddRectFilled(check_bb.Min + pad, check_bb.Max - pad, check_col, style.FrameRounding);
+            window->DrawList->AddRectFilled(animated_check_bb.Min + pad, animated_check_bb.Max - pad, check_col, style.FrameRounding * box_scale);
         }
-        else if (*v)
+        else if (mark_t > 0.001f)
         {
             const float pad = ImMax(1.0f, IM_TRUNC(square_sz / 6.0f));
-            RenderCheckMark(window->DrawList, check_bb.Min + ImVec2(pad, pad), check_col, square_sz - pad * 2.0f);
+            const int vtx_start = window->DrawList->VtxBuffer.Size;
+            RenderCheckMark(window->DrawList, animated_check_bb.Min + ImVec2(pad, pad), check_col, square_sz - pad * 2.0f);
+            const float pop_curve = sinf(mark_t * IM_PI);
+            const float mark_scale = *v
+                ? ImLerp(0.58f, 1.0f, mark_t) + pop_curve * (1.0f - mark_t) * 0.30f
+                : ImLerp(0.72f, 1.0f, mark_t);
+            const float mark_alpha = *v ? ImSaturate(0.45f + mark_t * 0.55f) : mark_t;
+            TransformDrawListVertsRange(window->DrawList, vtx_start, animated_check_bb.GetCenter(), mark_scale, mark_alpha);
         }
     }
     const ImVec2 label_pos = ImVec2(check_bb.Max.x + style.ItemInnerSpacing.x, check_bb.Min.y + style.FramePadding.y);
@@ -3353,7 +3406,28 @@ bool ImGui::SliderScalar(const char* label, ImGuiDataType data_type, void* p_dat
 
     // Render grab
     if (grab_bb.Max.x > grab_bb.Min.x)
-        window->DrawList->AddRectFilled(grab_bb.Min, grab_bb.Max, GetColorU32(g.ActiveId == id ? ImGuiCol_SliderGrabActive : ImGuiCol_SliderGrab), style.GrabRounding);
+    {
+        ImGuiStorage* storage = window->DC.StateStorage;
+        const bool is_active = (g.ActiveId == id);
+        float* hover_anim = storage->GetFloatRef(id ^ 0x51D0A001, hovered ? 1.0f : 0.0f);
+        float* active_anim = storage->GetFloatRef(id ^ 0x51D0A002, is_active ? 1.0f : 0.0f);
+        float* release_anim = storage->GetFloatRef(id ^ 0x51D0A003, 0.0f);
+        bool* was_active = storage->GetBoolRef(id ^ 0x51D0A004, is_active);
+        if (*was_active && !is_active)
+            *release_anim = 1.0f;
+        *was_active = is_active;
+        *hover_anim = AnimateWidgetScalar(*hover_anim, hovered ? 1.0f : 0.0f, 18.0f, g.IO.DeltaTime);
+        *active_anim = AnimateWidgetScalar(*active_anim, is_active ? 1.0f : 0.0f, 24.0f, g.IO.DeltaTime);
+        *release_anim = ImMax(0.0f, *release_anim - g.IO.DeltaTime / 0.22f);
+
+        const float release_phase = 1.0f - ImSaturate(*release_anim);
+        const float release_bounce = sinf(release_phase * IM_PI) * ImSaturate(*release_anim);
+        const float grab_scale = 1.0f + ImSaturate(*hover_anim) * 0.08f + ImSaturate(*active_anim) * 0.14f + release_bounce * 0.06f;
+        const ImRect animated_grab_bb = ScaleRectAroundCenter(grab_bb, grab_scale);
+        window->DrawList->AddRectFilled(animated_grab_bb.Min, animated_grab_bb.Max,
+                                        GetColorU32(is_active ? ImGuiCol_SliderGrabActive : ImGuiCol_SliderGrab),
+                                        style.GrabRounding * grab_scale);
+    }
 
     // Display value using user-provided display format so user can add prefix/suffix/decorations to the value.
     char value_buf[64];
@@ -3503,7 +3577,28 @@ bool ImGui::VSliderScalar(const char* label, const ImVec2& size, ImGuiDataType d
 
     // Render grab
     if (grab_bb.Max.y > grab_bb.Min.y)
-        window->DrawList->AddRectFilled(grab_bb.Min, grab_bb.Max, GetColorU32(g.ActiveId == id ? ImGuiCol_SliderGrabActive : ImGuiCol_SliderGrab), style.GrabRounding);
+    {
+        ImGuiStorage* storage = window->DC.StateStorage;
+        const bool is_active = (g.ActiveId == id);
+        float* hover_anim = storage->GetFloatRef(id ^ 0x51D0B001, hovered ? 1.0f : 0.0f);
+        float* active_anim = storage->GetFloatRef(id ^ 0x51D0B002, is_active ? 1.0f : 0.0f);
+        float* release_anim = storage->GetFloatRef(id ^ 0x51D0B003, 0.0f);
+        bool* was_active = storage->GetBoolRef(id ^ 0x51D0B004, is_active);
+        if (*was_active && !is_active)
+            *release_anim = 1.0f;
+        *was_active = is_active;
+        *hover_anim = AnimateWidgetScalar(*hover_anim, hovered ? 1.0f : 0.0f, 18.0f, g.IO.DeltaTime);
+        *active_anim = AnimateWidgetScalar(*active_anim, is_active ? 1.0f : 0.0f, 24.0f, g.IO.DeltaTime);
+        *release_anim = ImMax(0.0f, *release_anim - g.IO.DeltaTime / 0.22f);
+
+        const float release_phase = 1.0f - ImSaturate(*release_anim);
+        const float release_bounce = sinf(release_phase * IM_PI) * ImSaturate(*release_anim);
+        const float grab_scale = 1.0f + ImSaturate(*hover_anim) * 0.08f + ImSaturate(*active_anim) * 0.14f + release_bounce * 0.06f;
+        const ImRect animated_grab_bb = ScaleRectAroundCenter(grab_bb, grab_scale);
+        window->DrawList->AddRectFilled(animated_grab_bb.Min, animated_grab_bb.Max,
+                                        GetColorU32(is_active ? ImGuiCol_SliderGrabActive : ImGuiCol_SliderGrab),
+                                        style.GrabRounding * grab_scale);
+    }
 
     // Display value using user-provided display format so user can add prefix/suffix/decorations to the value.
     // For the vertical slider we allow centered text to overlap the frame padding

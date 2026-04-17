@@ -1289,6 +1289,11 @@ static const float DOCKING_TRANSPARENT_PAYLOAD_ALPHA        = 0.50f;    // For u
 static void             SetCurrentWindow(ImGuiWindow* window);
 static ImGuiWindow*     CreateNewWindow(const char* name, ImGuiWindowFlags flags);
 static ImVec2           CalcNextScrollFromScrollTargetAndClamp(ImGuiWindow* window);
+static float            SmoothScrollDampScalar(float current, float target, float& current_velocity, float smooth_time, float max_speed, float delta_time);
+static float            GetSmoothScrollOverscrollLimit(const ImGuiWindow* window, ImGuiAxis axis);
+static void             ClearWindowSmoothScrollAxis(ImGuiWindow* window, ImGuiAxis axis);
+static void             QueueWindowSmoothScrollAxis(ImGuiWindow* window, ImGuiAxis axis, float target_scroll);
+static void             UpdateWindowSmoothScroll(ImGuiWindow* window, float delta_time);
 static float            DockAnimEaseSmooth(float t);
 static float            DockAnimEaseOutCubic(float t);
 static float            DockAnimEaseInOutCubic(float t);
@@ -4602,6 +4607,10 @@ ImGuiWindow::ImGuiWindow(ImGuiContext* ctx, const char* name) : DrawListInst(NUL
     TabId = GetID("#TAB");
     ScrollTarget = ImVec2(FLT_MAX, FLT_MAX);
     ScrollTargetCenterRatio = ImVec2(0.5f, 0.5f);
+    ScrollAnimTarget = ImVec2(0.0f, 0.0f);
+    ScrollAnimVelocity = ImVec2(0.0f, 0.0f);
+    ScrollAnimLastApplied = ImVec2(0.0f, 0.0f);
+    ScrollAnimMask = 0;
     AutoPosLastDirection = ImGuiDir_None;
     AutoFitFramesX = AutoFitFramesY = -1;
     SetWindowPosAllowFlags = SetWindowSizeAllowFlags = SetWindowCollapsedAllowFlags = SetWindowDockAllowFlags = 0;
@@ -8748,6 +8757,21 @@ static float AnimatedModalPopupAlpha(const ImGuiPopupData& popup)
     return ImSaturate(0.20f + visibility * 0.80f);
 }
 
+static const ImGuiPopupData* FindAnimatedPopupForWindow(ImGuiWindow* window)
+{
+    if (!window)
+        return NULL;
+    ImGuiContext& g = *GImGui;
+    const int popup_depth = ImMin(g.BeginPopupStack.Size, g.OpenPopupStack.Size);
+    for (int n = popup_depth - 1; n >= 0; n--)
+    {
+        const ImGuiPopupData& popup_ref = g.OpenPopupStack[n];
+        if (popup_ref.Window != NULL && ImGui::IsWindowWithinBeginStackOf(window, popup_ref.Window))
+            return &popup_ref;
+    }
+    return NULL;
+}
+
 static ImVec2 AnimatedPopupOffset(const ImGuiWindow* window, const ImGuiPopupData& popup)
 {
     const float visibility = ImSaturate(popup.PopupAnimVisibility);
@@ -8756,6 +8780,12 @@ static ImVec2 AnimatedPopupOffset(const ImGuiWindow* window, const ImGuiPopupDat
         : (1.0f - AnimatedModalPopupEaseOutCubic(visibility));
 
     ImVec2 offset = popup.PopupAnimHandoffOffset * phase;
+    if (window && (window->Flags & ImGuiWindowFlags_ChildMenu) == 0 && strncmp(window->Name, "##Combo_", 8) == 0)
+    {
+        if (window->AutoPosLastDirection == ImGuiDir_Down || window->AutoPosLastDirection == ImGuiDir_Left)
+            offset.y += -phase * 16.0f;
+        return offset;
+    }
     if (!window || (window->Flags & ImGuiWindowFlags_ChildMenu) == 0)
         return offset;
 
@@ -8785,7 +8815,7 @@ static void TransformAnimatedModalPopupDrawList(ImGuiWindow* window, const ImGui
         return;
 
     ImDrawList* draw_list = window->DrawList;
-    const ImVec2 center = window->Rect().GetCenter();
+    const ImVec2 center = (popup.Window && popup.Window != window) ? popup.Window->Rect().GetCenter() : window->Rect().GetCenter();
 
     for (ImDrawVert& vertex : draw_list->VtxBuffer)
     {
@@ -8850,12 +8880,9 @@ void ImGui::End()
         if (ImGuiWindow* host_window = window->DockNode->HostWindow)         // FIXME-DOCK
             host_window->DC.CursorMaxPos = window->DC.CursorMaxPos + window->WindowPadding - host_window->WindowPadding;
 
-    if ((window->Flags & ImGuiWindowFlags_Popup) != 0
-        && g.BeginPopupStack.Size > 0
-        && g.BeginPopupStack.Size <= g.OpenPopupStack.Size)
+    if (const ImGuiPopupData* popup_ref = FindAnimatedPopupForWindow(window))
     {
-        const ImGuiPopupData& popup_ref = g.OpenPopupStack[g.BeginPopupStack.Size - 1];
-        TransformAnimatedModalPopupDrawList(window, popup_ref);
+        TransformAnimatedModalPopupDrawList(window, *popup_ref);
     }
 
     // Pop from window stack
@@ -10988,6 +11015,128 @@ static ImGuiWindow* FindBestWheelingWindow(const ImVec2& wheel)
     return (g.WheelingAxisAvg.x > g.WheelingAxisAvg.y) ? windows[0] : windows[1];
 }
 
+static float SmoothScrollDampScalar(float current, float target, float& current_velocity, float smooth_time, float max_speed, float delta_time)
+{
+    smooth_time = ImMax(0.0001f, smooth_time);
+    const float omega = 2.0f / smooth_time;
+    const float x = omega * delta_time;
+    const float exp = 1.0f / (1.0f + x + 0.48f * x * x + 0.235f * x * x * x);
+
+    float change = current - target;
+    const float original_target = target;
+    const float max_change = max_speed * smooth_time;
+    change = ImClamp(change, -max_change, max_change);
+    target = current - change;
+
+    const float temp = (current_velocity + omega * change) * delta_time;
+    current_velocity = (current_velocity - omega * temp) * exp;
+    float output = target + (change + temp) * exp;
+
+    if (((original_target - current) > 0.0f) == (output > original_target))
+    {
+        output = original_target;
+        current_velocity = 0.0f;
+    }
+
+    return output;
+}
+
+static float GetSmoothScrollOverscrollLimit(const ImGuiWindow* window, ImGuiAxis axis)
+{
+    const float axis_extent = (axis == ImGuiAxis_X) ? window->InnerRect.GetWidth() : window->InnerRect.GetHeight();
+    const float by_viewport = axis_extent * 0.12f;
+    const float by_range = window->ScrollMax[axis] * 0.16f + 6.0f;
+    return ImClamp(ImMin(by_viewport, by_range), 6.0f, 26.0f);
+}
+
+static void ClearWindowSmoothScrollAxis(ImGuiWindow* window, ImGuiAxis axis)
+{
+    const ImU8 axis_mask = (ImU8)(1u << axis);
+    window->ScrollAnimMask &= (ImU8)~axis_mask;
+    window->ScrollAnimTarget[axis] = window->Scroll[axis];
+    window->ScrollAnimVelocity[axis] = 0.0f;
+    window->ScrollAnimLastApplied[axis] = window->Scroll[axis];
+}
+
+static void QueueWindowSmoothScrollAxis(ImGuiWindow* window, ImGuiAxis axis, float target_scroll)
+{
+    const ImU8 axis_mask = (ImU8)(1u << axis);
+    if ((window->ScrollAnimMask & axis_mask) == 0)
+    {
+        window->ScrollAnimTarget[axis] = window->Scroll[axis];
+        window->ScrollAnimVelocity[axis] = 0.0f;
+        window->ScrollAnimLastApplied[axis] = window->Scroll[axis];
+    }
+    const float min_scroll = 0.0f;
+    const float max_scroll = window->ScrollMax[axis];
+    const float overscroll_limit = GetSmoothScrollOverscrollLimit(window, axis);
+    const float overscroll_resistance = 0.30f;
+    if (target_scroll < min_scroll)
+        target_scroll = min_scroll + (target_scroll - min_scroll) * overscroll_resistance;
+    else if (target_scroll > max_scroll)
+        target_scroll = max_scroll + (target_scroll - max_scroll) * overscroll_resistance;
+    window->ScrollAnimTarget[axis] = ImClamp(target_scroll, min_scroll - overscroll_limit, max_scroll + overscroll_limit);
+    window->ScrollAnimMask |= axis_mask;
+}
+
+static void UpdateWindowSmoothScroll(ImGuiWindow* window, float delta_time)
+{
+    if (window == NULL || window->ScrollAnimMask == 0)
+        return;
+
+    const float smooth_time = 0.085f;
+    const float max_speed = 18000.0f;
+    const float settle_position_epsilon = 0.05f;
+    const float settle_velocity_epsilon = 0.40f;
+    const float overscroll_return_rate = 10.5f;
+    for (int axis = 0; axis < 2; axis++)
+    {
+        const ImU8 axis_mask = (ImU8)(1u << axis);
+        if ((window->ScrollAnimMask & axis_mask) == 0)
+            continue;
+
+        if (window->ScrollMax[axis] <= 0.0f || window->Collapsed || window->SkipItems)
+        {
+            ClearWindowSmoothScrollAxis(window, (ImGuiAxis)axis);
+            continue;
+        }
+
+        if (ImAbs(window->Scroll[axis] - window->ScrollAnimLastApplied[axis]) > 1.0f)
+        {
+            // Another scroll owner took control (scrollbar drag, explicit SetScroll, nav jump).
+            ClearWindowSmoothScrollAxis(window, (ImGuiAxis)axis);
+            continue;
+        }
+
+        const float min_scroll = 0.0f;
+        const float max_scroll = window->ScrollMax[axis];
+        const float overscroll_limit = GetSmoothScrollOverscrollLimit(window, (ImGuiAxis)axis);
+        window->ScrollAnimTarget[axis] = ImClamp(window->ScrollAnimTarget[axis], min_scroll - overscroll_limit, max_scroll + overscroll_limit);
+        const float clamped_target = ImClamp(window->ScrollAnimTarget[axis], min_scroll, max_scroll);
+        if (window->ScrollAnimTarget[axis] != clamped_target)
+        {
+            const float return_blend = 1.0f - expf(-overscroll_return_rate * delta_time);
+            window->ScrollAnimTarget[axis] = ImLerp(window->ScrollAnimTarget[axis], clamped_target, return_blend);
+            if (ImAbs(window->ScrollAnimTarget[axis] - clamped_target) < settle_position_epsilon)
+                window->ScrollAnimTarget[axis] = clamped_target;
+        }
+
+        float next_scroll = SmoothScrollDampScalar(window->Scroll[axis], window->ScrollAnimTarget[axis], window->ScrollAnimVelocity[axis], smooth_time, max_speed, delta_time);
+        next_scroll = ImClamp(next_scroll, min_scroll - overscroll_limit, max_scroll + overscroll_limit);
+        if (ImAbs(next_scroll - window->ScrollAnimTarget[axis]) < settle_position_epsilon &&
+            ImAbs(window->ScrollAnimVelocity[axis]) < settle_velocity_epsilon)
+        {
+            next_scroll = window->ScrollAnimTarget[axis];
+            window->ScrollAnimVelocity[axis] = 0.0f;
+            window->ScrollAnimMask &= (ImU8)~axis_mask;
+        }
+
+        window->Scroll[axis] = next_scroll;
+        window->ScrollTarget[axis] = FLT_MAX;
+        window->ScrollAnimLastApplied[axis] = next_scroll;
+    }
+}
+
 // Called by NewFrame()
 void ImGui::UpdateMouseWheel()
 {
@@ -11003,6 +11152,8 @@ void ImGui::UpdateMouseWheel()
             LockWheelingWindow(NULL, 0.0f);
     }
 
+    const float scroll_anim_dt = ImClamp(g.IO.DeltaTime, 1.0f / 240.0f, 1.0f / 30.0f);
+
     ImVec2 wheel;
     wheel.x = TestKeyOwner(ImGuiKey_MouseWheelX, ImGuiKeyOwner_NoOwner) ? g.IO.MouseWheelH : 0.0f;
     wheel.y = TestKeyOwner(ImGuiKey_MouseWheelY, ImGuiKeyOwner_NoOwner) ? g.IO.MouseWheel : 0.0f;
@@ -11010,7 +11161,11 @@ void ImGui::UpdateMouseWheel()
     //IMGUI_DEBUG_LOG("MouseWheel X:%.3f Y:%.3f\n", wheel_x, wheel_y);
     ImGuiWindow* mouse_window = g.WheelingWindow ? g.WheelingWindow : g.HoveredWindow;
     if (!mouse_window || mouse_window->Collapsed)
+    {
+        for (int n = 0; n < g.Windows.Size; n++)
+            UpdateWindowSmoothScroll(g.Windows[n], scroll_anim_dt);
         return;
+    }
 
     // Zoom / Scale window
     // FIXME-OBSOLETE: This is an old feature, it still works but pretty much nobody is using it and may be best redesigned.
@@ -11029,10 +11184,16 @@ void ImGui::UpdateMouseWheel()
             window->SizeFull = ImTrunc(window->SizeFull * scale);
             MarkIniSettingsDirty(window);
         }
+        for (int n = 0; n < g.Windows.Size; n++)
+            UpdateWindowSmoothScroll(g.Windows[n], scroll_anim_dt);
         return;
     }
     if (g.IO.KeyCtrl)
+    {
+        for (int n = 0; n < g.Windows.Size; n++)
+            UpdateWindowSmoothScroll(g.Windows[n], scroll_anim_dt);
         return;
+    }
 
     // Mouse wheel scrolling
     // Read about io.MouseWheelRequestAxisSwap and its issue on Mac+Emscripten in UpdateMouseInputs()
@@ -11048,7 +11209,11 @@ void ImGui::UpdateMouseWheel()
     wheel += g.WheelingWindowWheelRemainder;
     g.WheelingWindowWheelRemainder = ImVec2(0.0f, 0.0f);
     if (wheel.x == 0.0f && wheel.y == 0.0f)
+    {
+        for (int n = 0; n < g.Windows.Size; n++)
+            UpdateWindowSmoothScroll(g.Windows[n], scroll_anim_dt);
         return;
+    }
 
     // Mouse wheel scrolling: find target and apply
     // - don't renew lock if axis doesn't apply on the window.
@@ -11064,7 +11229,8 @@ void ImGui::UpdateMouseWheel()
                 LockWheelingWindow(window, wheel.x);
                 float max_step = window->InnerRect.GetWidth() * 0.67f;
                 float scroll_step = ImTrunc(ImMin(2 * window->FontRefSize, max_step));
-                SetScrollX(window, window->Scroll.x - wheel.x * scroll_step);
+                const float base_scroll = (window->ScrollAnimMask & (1 << ImGuiAxis_X)) ? window->ScrollAnimTarget.x : window->Scroll.x;
+                QueueWindowSmoothScrollAxis(window, ImGuiAxis_X, base_scroll - wheel.x * scroll_step);
                 g.WheelingWindowScrolledFrame = g.FrameCount;
             }
             if (do_scroll[ImGuiAxis_Y])
@@ -11072,10 +11238,14 @@ void ImGui::UpdateMouseWheel()
                 LockWheelingWindow(window, wheel.y);
                 float max_step = window->InnerRect.GetHeight() * 0.67f;
                 float scroll_step = ImTrunc(ImMin(5 * window->FontRefSize, max_step));
-                SetScrollY(window, window->Scroll.y - wheel.y * scroll_step);
+                const float base_scroll = (window->ScrollAnimMask & (1 << ImGuiAxis_Y)) ? window->ScrollAnimTarget.y : window->Scroll.y;
+                QueueWindowSmoothScrollAxis(window, ImGuiAxis_Y, base_scroll - wheel.y * scroll_step);
                 g.WheelingWindowScrolledFrame = g.FrameCount;
             }
         }
+
+    for (int n = 0; n < g.Windows.Size; n++)
+        UpdateWindowSmoothScroll(g.Windows[n], scroll_anim_dt);
 }
 
 void ImGui::SetNextFrameWantCaptureKeyboard(bool want_capture_keyboard)
@@ -12661,6 +12831,7 @@ float ImGui::GetScrollMaxY()
 
 void ImGui::SetScrollX(ImGuiWindow* window, float scroll_x)
 {
+    ClearWindowSmoothScrollAxis(window, ImGuiAxis_X);
     window->ScrollTarget.x = scroll_x;
     window->ScrollTargetCenterRatio.x = 0.0f;
     window->ScrollTargetEdgeSnapDist.x = 0.0f;
@@ -12668,6 +12839,7 @@ void ImGui::SetScrollX(ImGuiWindow* window, float scroll_x)
 
 void ImGui::SetScrollY(ImGuiWindow* window, float scroll_y)
 {
+    ClearWindowSmoothScrollAxis(window, ImGuiAxis_Y);
     window->ScrollTarget.y = scroll_y;
     window->ScrollTargetCenterRatio.y = 0.0f;
     window->ScrollTargetEdgeSnapDist.y = 0.0f;
@@ -12698,6 +12870,7 @@ void ImGui::SetScrollY(float scroll_y)
 void ImGui::SetScrollFromPosX(ImGuiWindow* window, float local_x, float center_x_ratio)
 {
     IM_ASSERT(center_x_ratio >= 0.0f && center_x_ratio <= 1.0f);
+    ClearWindowSmoothScrollAxis(window, ImGuiAxis_X);
     window->ScrollTarget.x = IM_TRUNC(local_x - window->DecoOuterSizeX1 - window->DecoInnerSizeX1 + window->Scroll.x); // Convert local position to scroll offset
     window->ScrollTargetCenterRatio.x = center_x_ratio;
     window->ScrollTargetEdgeSnapDist.x = 0.0f;
@@ -12706,6 +12879,7 @@ void ImGui::SetScrollFromPosX(ImGuiWindow* window, float local_x, float center_x
 void ImGui::SetScrollFromPosY(ImGuiWindow* window, float local_y, float center_y_ratio)
 {
     IM_ASSERT(center_y_ratio >= 0.0f && center_y_ratio <= 1.0f);
+    ClearWindowSmoothScrollAxis(window, ImGuiAxis_Y);
     window->ScrollTarget.y = IM_TRUNC(local_y - window->DecoOuterSizeY1 - window->DecoInnerSizeY1 + window->Scroll.y); // Convert local position to scroll offset
     window->ScrollTargetCenterRatio.y = center_y_ratio;
     window->ScrollTargetEdgeSnapDist.y = 0.0f;
@@ -13344,13 +13518,11 @@ bool ImGui::BeginPopupModal(const char* name, bool* p_open, ImGuiWindowFlags fla
         return false;
     }
 
-    // Center modal windows by default for increased visibility
-    // (this won't really last as settings will kick in, and is mostly for backward compatibility. user may do the same themselves)
-    // FIXME: Should test for (PosCond & window->SetWindowPosAllowFlags) with the upcoming window.
+    // Center modal windows by default so confirmation/compile dialogs open consistently in the viewport center.
     if ((g.NextWindowData.HasFlags & ImGuiNextWindowDataFlags_HasPos) == 0)
     {
         const ImGuiViewport* viewport = parent_window->WasActive ? parent_window->Viewport : GetMainViewport(); // FIXME-VIEWPORT: What may be our reference viewport?
-        SetNextWindowPos(viewport->GetCenter(), ImGuiCond_FirstUseEver, ImVec2(0.5f, 0.5f));
+        SetNextWindowPos(viewport->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
     }
 
     flags |= ImGuiWindowFlags_Popup | ImGuiWindowFlags_Modal | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoDocking;
