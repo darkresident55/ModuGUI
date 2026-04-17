@@ -1,5 +1,5 @@
 // dear imgui, v1.92.5 WIP
-// ModuGUI Fork V1.0
+// ModuGUI Fork V1.1
 // (ImGui main code and documentation)
 
 // Help:
@@ -1290,6 +1290,11 @@ static void             SetCurrentWindow(ImGuiWindow* window);
 static ImGuiWindow*     CreateNewWindow(const char* name, ImGuiWindowFlags flags);
 static ImVec2           CalcNextScrollFromScrollTargetAndClamp(ImGuiWindow* window);
 static float            DockAnimEaseSmooth(float t);
+static float            DockAnimEaseOutCubic(float t);
+static float            DockAnimEaseInOutCubic(float t);
+static float            DockAnimEaseOutBack(float t, float strength);
+static ImVec2           DockAnimEvaluateSize(const ImGuiWindow* window, float t);
+static ImVec2           DockAnimEvaluateCenter(const ImGuiWindow* window, float t);
 
 static void             AddWindowToSortBuffer(ImVector<ImGuiWindow*>* out_sorted_windows, ImGuiWindow* window);
 
@@ -1364,6 +1369,9 @@ static void             RenderWindowDecorations(ImGuiWindow* window, const ImRec
 static void             RenderWindowTitleBarContents(ImGuiWindow* window, const ImRect& title_bar_rect, const char* name, bool* p_open);
 static void             RenderDimmedBackgroundBehindWindow(ImGuiWindow* window, ImU32 col);
 static void             RenderDimmedBackgrounds();
+static float            GetAnimatedModalDimTarget();
+static void             UpdateAnimatedPopupState();
+static void             FinalizeClosePopupToLevel(int remaining, bool restore_focus_to_window_under_popup);
 static void             SetLastItemDataForWindow(ImGuiWindow* window, const ImRect& rect);
 static void             SetLastItemDataForChildWindowItem(ImGuiWindow* window, const ImRect& rect);
 
@@ -4608,6 +4616,7 @@ ImGuiWindow::ImGuiWindow(ImGuiContext* ctx, const char* name) : DrawListInst(NUL
     DockAnimStartTime = 0.0f;
     DockAnimDuration = 0.0f;
     DockAnimActive = false;
+    DockAnimUndocking = false;
     DockAnimOvershoot = false;
     DockAnimGrabRatio = ImVec2(0.5f, 0.5f);
     DockAnimOvershootStrength = 1.0f;
@@ -5374,25 +5383,21 @@ void ImGui::UpdateMouseMovingWindowNewFrame()
                 const float elapsed = (float)(g.Time - moving_window->DockAnimStartTime);
                 const float duration = ImMax(0.001f, moving_window->DockAnimDuration);
                 float t = ImSaturate(elapsed / duration);
-                const float ease_out = DockAnimEaseSmooth(t);
-                const float s = 1.70158f * moving_window->DockAnimOvershootStrength;
-                const float t1 = t - 1.0f;
-                float ease_t = 1.0f + (t1 * t1) * ((s + 1.0f) * t1 + s);
-                ImVec2 anim_size = ImLerp(moving_window->DockAnimFromSize, moving_window->DockAnimToSize, ease_t);
+                ImVec2 anim_size = DockAnimEvaluateSize(moving_window, t);
                 if (anim_size.x > 0.0f && anim_size.y > 0.0f)
                 {
                     moving_window->SizeFull = anim_size;
                     moving_window->Size = anim_size;
                     ImVec2 pos_target_anim = g.IO.MousePos - moving_window->DockAnimGrabRatio * anim_size;
-                    pos = ImLerp(moving_window->DockAnimFromPos, pos_target_anim, ease_out);
+                    pos = ImLerp(moving_window->DockAnimFromPos, pos_target_anim, DockAnimEaseOutCubic(t));
                 }
                 else
                 {
-                    pos = ImLerp(moving_window->DockAnimFromPos, pos_target, ease_out);
+                    pos = ImLerp(moving_window->DockAnimFromPos, pos_target, DockAnimEaseOutCubic(t));
                 }
             }
             const bool want_drag_smooth = (moving_window->DockNode != NULL) || moving_window->DockIsActive || (moving_window->DockNodeAsHost != NULL);
-            if (want_drag_smooth)
+            if (want_drag_smooth && !(moving_window->DockAnimActive && moving_window->DockAnimUndocking))
             {
                 const float drag_speed = 22.0f;
                 const float t = ImClamp(g.IO.DeltaTime * drag_speed, 0.0f, 1.0f);
@@ -5827,11 +5832,16 @@ void ImGui::NewFrame()
     // Handle user moving window with mouse (at the beginning of the frame to avoid input lag or sheering)
     UpdateMouseMovingWindowNewFrame();
 
+    UpdateAnimatedPopupState();
+
     // Background darkening/whitening
-    if (GetTopMostPopupModal() != NULL || (g.NavWindowingTarget != NULL && g.NavWindowingHighlightAlpha > 0.0f))
-        g.DimBgRatio = ImMin(g.DimBgRatio + g.IO.DeltaTime * 6.0f, 1.0f);
+    const float modal_dim_target = GetAnimatedModalDimTarget();
+    const float nav_dim_target = (g.NavWindowingTarget != NULL && g.NavWindowingHighlightAlpha > 0.0f) ? 1.0f : 0.0f;
+    const float dim_target = ImMax(modal_dim_target, nav_dim_target);
+    if (g.DimBgRatio < dim_target)
+        g.DimBgRatio = ImMin(g.DimBgRatio + g.IO.DeltaTime * 8.0f, dim_target);
     else
-        g.DimBgRatio = ImMax(g.DimBgRatio - g.IO.DeltaTime * 10.0f, 0.0f);
+        g.DimBgRatio = ImMax(g.DimBgRatio - g.IO.DeltaTime * 9.0f, dim_target);
 
     g.MouseCursor = ImGuiMouseCursor_Arrow;
     g.WantCaptureMouseNextFrame = g.WantCaptureKeyboardNextFrame = g.WantTextInputNextFrame = -1;
@@ -8197,19 +8207,18 @@ bool ImGui::Begin(const char* name, bool* p_open, ImGuiWindowFlags flags)
             const float elapsed = (float)(g.Time - window->DockAnimStartTime);
             const float duration = ImMax(0.001f, window->DockAnimDuration);
             float t = ImSaturate(elapsed / duration);
-            float ease_t = DockAnimEaseSmooth(t);
-            if (window->DockAnimOvershoot)
-            {
-                const float s = 1.70158f * window->DockAnimOvershootStrength;
-                const float t1 = t - 1.0f;
-                ease_t = 1.0f + (t1 * t1) * ((s + 1.0f) * t1 + s);
-            }
-            const ImVec2 from_center = window->DockAnimFromPos + window->DockAnimFromSize * 0.5f;
-            const ImVec2 to_center = window->DockAnimToPos + window->DockAnimToSize * 0.5f;
-            const ImVec2 center = ImLerp(from_center, to_center, t);
-            const ImVec2 size = ImLerp(window->DockAnimFromSize, window->DockAnimToSize, ease_t);
+            const bool undock_drag_owns_motion =
+                window->DockAnimUndocking &&
+                g.MovingWindow != NULL &&
+                g.IO.MouseDown[0] &&
+                g.MovingWindow->RootWindowDockTree == window->RootWindowDockTree;
+            const ImVec2 size = DockAnimEvaluateSize(window, t);
             window->SizeFull = size;
-            window->Pos = center - size * 0.5f;
+            if (!undock_drag_owns_motion)
+            {
+                const ImVec2 center = DockAnimEvaluateCenter(window, t);
+                window->Pos = center - size * 0.5f;
+            }
             window->Size = (window->Collapsed && !(flags & ImGuiWindowFlags_ChildWindow)) ? window->TitleBarRect().GetSize() : window->SizeFull;
             if (t >= 1.0f)
                 window->DockAnimActive = false;
@@ -8703,6 +8712,98 @@ bool ImGui::Begin(const char* name, bool* p_open, ImGuiWindowFlags flags)
     return !window->SkipItems;
 }
 
+static float AnimatedModalPopupEaseOutCubic(float t)
+{
+    t = ImSaturate(t);
+    const float inv_t = 1.0f - t;
+    return 1.0f - inv_t * inv_t * inv_t;
+}
+
+static float AnimatedModalPopupScale(const ImGuiPopupData& popup)
+{
+    const float visibility = ImSaturate(popup.PopupAnimVisibility);
+    if (!popup.PopupAnimClosing)
+    {
+        const float t = AnimatedModalPopupEaseOutCubic(visibility);
+        const float overshoot_t = ImSaturate(t / 0.74f);
+        const float settle_t = ImSaturate((t - 0.74f) / 0.26f);
+        if (settle_t <= 0.0f)
+            return ImLerp(0.86f, 1.08f, overshoot_t);
+        return ImLerp(1.08f, 1.0f, AnimatedModalPopupEaseOutCubic(settle_t));
+    }
+
+    const float close_t = AnimatedModalPopupEaseOutCubic(1.0f - visibility);
+    const float swell_t = ImSaturate(close_t / 0.30f);
+    const float depart_t = ImSaturate((close_t - 0.30f) / 0.70f);
+    if (depart_t <= 0.0f)
+        return ImLerp(1.0f, 1.08f, swell_t);
+    return ImLerp(1.08f, 0.76f, AnimatedModalPopupEaseOutCubic(depart_t));
+}
+
+static float AnimatedModalPopupAlpha(const ImGuiPopupData& popup)
+{
+    const float visibility = ImSaturate(popup.PopupAnimVisibility);
+    if (popup.PopupAnimClosing)
+        return visibility;
+    return ImSaturate(0.20f + visibility * 0.80f);
+}
+
+static ImVec2 AnimatedPopupOffset(const ImGuiWindow* window, const ImGuiPopupData& popup)
+{
+    if (!window || (window->Flags & ImGuiWindowFlags_ChildMenu) == 0)
+        return ImVec2(0.0f, 0.0f);
+
+    const float visibility = ImSaturate(popup.PopupAnimVisibility);
+    const float phase = popup.PopupAnimClosing
+        ? AnimatedModalPopupEaseOutCubic(1.0f - visibility)
+        : (1.0f - AnimatedModalPopupEaseOutCubic(visibility));
+
+    float side = 0.0f;
+    if (window->AutoPosLastDirection == ImGuiDir_Right)
+        side = 1.0f;
+    else if (window->AutoPosLastDirection == ImGuiDir_Left)
+        side = -1.0f;
+    else if (window->ParentWindow)
+        side = (window->Pos.x >= window->ParentWindow->Pos.x) ? 1.0f : -1.0f;
+    else
+        side = 1.0f;
+
+    return ImVec2(-side * phase * 22.0f, 0.0f);
+}
+
+static void TransformAnimatedModalPopupDrawList(ImGuiWindow* window, const ImGuiPopupData& popup)
+{
+    if (!window || !window->DrawList || window->DrawList->VtxBuffer.empty())
+        return;
+
+    const float scale = AnimatedModalPopupScale(popup);
+    const float alpha = AnimatedModalPopupAlpha(popup);
+    const ImVec2 offset = AnimatedPopupOffset(window, popup);
+    if (ImFabs(scale - 1.0f) <= 0.0001f && alpha >= 0.999f && ImLengthSqr(offset) <= 0.0001f)
+        return;
+
+    ImDrawList* draw_list = window->DrawList;
+    const ImVec2 center = window->Rect().GetCenter();
+
+    for (ImDrawVert& vertex : draw_list->VtxBuffer)
+    {
+        vertex.pos = center + (vertex.pos - center) * scale + offset;
+        if (alpha < 0.999f)
+        {
+            const ImU32 a = (vertex.col >> IM_COL32_A_SHIFT) & 0xFF;
+            const ImU32 scaled_a = (ImU32)ImClamp((int)(a * alpha), 0, 255);
+            vertex.col = (vertex.col & ~IM_COL32_A_MASK) | (scaled_a << IM_COL32_A_SHIFT);
+        }
+    }
+
+    for (ImDrawCmd& cmd : draw_list->CmdBuffer)
+    {
+        ImVec2 clip_min = center + (ImVec2(cmd.ClipRect.x, cmd.ClipRect.y) - center) * scale + offset;
+        ImVec2 clip_max = center + (ImVec2(cmd.ClipRect.z, cmd.ClipRect.w) - center) * scale + offset;
+        cmd.ClipRect = ImVec4(clip_min.x, clip_min.y, clip_max.x, clip_max.y);
+    }
+}
+
 void ImGui::End()
 {
     ImGuiContext& g = *GImGui;
@@ -8746,6 +8847,14 @@ void ImGui::End()
     if (window->DockNode && window->DockTabIsVisible)
         if (ImGuiWindow* host_window = window->DockNode->HostWindow)         // FIXME-DOCK
             host_window->DC.CursorMaxPos = window->DC.CursorMaxPos + window->WindowPadding - host_window->WindowPadding;
+
+    if ((window->Flags & ImGuiWindowFlags_Popup) != 0
+        && g.BeginPopupStack.Size > 0
+        && g.BeginPopupStack.Size <= g.OpenPopupStack.Size)
+    {
+        const ImGuiPopupData& popup_ref = g.OpenPopupStack[g.BeginPopupStack.Size - 1];
+        TransformAnimatedModalPopupDrawList(window, popup_ref);
+    }
 
     // Pop from window stack
     g.LastItemData = window_stack_data.ParentLastItemDataBackup;
@@ -12880,6 +12989,9 @@ void ImGui::OpenPopupEx(ImGuiID id, ImGuiPopupFlags popup_flags)
     popup_ref.OpenParentId = parent_window->IDStack.back();
     popup_ref.OpenPopupPos = NavCalcPreferredRefPos();
     popup_ref.OpenMousePos = IsMousePosValid(&g.IO.MousePos) ? g.IO.MousePos : popup_ref.OpenPopupPos;
+    popup_ref.PopupAnimVisibility = 0.0f;
+    popup_ref.PopupAnimClosing = false;
+    popup_ref.PopupAnimRestoreFocus = false;
 
     IMGUI_DEBUG_LOG_POPUP("[popup] OpenPopupEx(0x%08X)\n", id);
     if (g.OpenPopupStack.Size < current_stack_size + 1)
@@ -12900,11 +13012,14 @@ void ImGui::OpenPopupEx(ImGuiID id, ImGuiPopupFlags popup_flags)
         {
             // No reopen
             g.OpenPopupStack[current_stack_size].OpenFrameCount = popup_ref.OpenFrameCount;
+            g.OpenPopupStack[current_stack_size].PopupAnimClosing = false;
         }
         else
         {
             // Reopen: close child popups if any, then flag popup for open/reopen (set position, focus, init navigation)
             ClosePopupToLevel(current_stack_size, true);
+            if (g.OpenPopupStack.Size > current_stack_size)
+                FinalizeClosePopupToLevel(current_stack_size, true);
             g.OpenPopupStack.push_back(popup_ref);
         }
 
@@ -12979,29 +13094,82 @@ void ImGui::ClosePopupsExceptModals()
         ClosePopupToLevel(popup_count_to_keep, true);
 }
 
-void ImGui::ClosePopupToLevel(int remaining, bool restore_focus_to_window_under_popup)
+static const float IMGUI_MODAL_POPUP_ANIM_OPEN_DURATION = 0.16f;
+static const float IMGUI_MODAL_POPUP_ANIM_CLOSE_DURATION = 0.14f;
+
+static bool IsAnimatedPopup(const ImGuiPopupData& popup)
+{
+    return popup.Window != NULL
+        && (popup.Window->Flags & ImGuiWindowFlags_Popup) != 0;
+}
+
+static bool IsAnimatedModalPopup(const ImGuiPopupData& popup)
+{
+    return IsAnimatedPopup(popup)
+        && (popup.Window->Flags & ImGuiWindowFlags_Modal) != 0
+        && (popup.Window->Flags & ImGuiWindowFlags_ChildMenu) == 0;
+}
+
+static float ImGui::GetAnimatedModalDimTarget()
 {
     ImGuiContext& g = *GImGui;
-    IMGUI_DEBUG_LOG_POPUP("[popup] ClosePopupToLevel(%d), restore_under=%d\n", remaining, restore_focus_to_window_under_popup);
+    for (int n = g.OpenPopupStack.Size - 1; n >= 0; n--)
+    {
+        const ImGuiPopupData& popup = g.OpenPopupStack[n];
+        if (!IsAnimatedModalPopup(popup))
+            continue;
+        return popup.PopupAnimVisibility;
+    }
+    return 0.0f;
+}
+
+static void ImGui::FinalizeClosePopupToLevel(int remaining, bool restore_focus_to_window_under_popup)
+{
+    ImGuiContext& g = *GImGui;
+    IMGUI_DEBUG_LOG_POPUP("[popup] FinalizeClosePopupToLevel(%d), restore_under=%d\n", remaining, restore_focus_to_window_under_popup);
     IM_ASSERT(remaining >= 0 && remaining < g.OpenPopupStack.Size);
     if (g.DebugLogFlags & ImGuiDebugLogFlags_EventPopup)
         for (int n = remaining; n < g.OpenPopupStack.Size; n++)
             IMGUI_DEBUG_LOG_POPUP("[popup] - Closing PopupID 0x%08X Window \"%s\"\n", g.OpenPopupStack[n].PopupId, g.OpenPopupStack[n].Window ? g.OpenPopupStack[n].Window->Name : NULL);
 
-    // Trim open popup stack
     ImGuiPopupData prev_popup = g.OpenPopupStack[remaining];
     g.OpenPopupStack.resize(remaining);
 
-    // Restore focus (unless popup window was not yet submitted, and didn't have a chance to take focus anyhow. See #7325 for an edge case)
     if (restore_focus_to_window_under_popup && prev_popup.Window)
     {
         ImGuiWindow* popup_window = prev_popup.Window;
         ImGuiWindow* focus_window = (popup_window->Flags & ImGuiWindowFlags_ChildMenu) ? popup_window->ParentWindow : prev_popup.RestoreNavWindow;
         if (focus_window && !focus_window->WasActive)
-            FocusTopMostWindowUnderOne(popup_window, NULL, NULL, ImGuiFocusRequestFlags_RestoreFocusedChild); // Fallback
+            ImGui::FocusTopMostWindowUnderOne(popup_window, NULL, NULL, ImGuiFocusRequestFlags_RestoreFocusedChild);
         else
-            FocusWindow(focus_window, (g.NavLayer == ImGuiNavLayer_Main) ? ImGuiFocusRequestFlags_RestoreFocusedChild : ImGuiFocusRequestFlags_None);
+            ImGui::FocusWindow(focus_window, (g.NavLayer == ImGuiNavLayer_Main) ? ImGuiFocusRequestFlags_RestoreFocusedChild : ImGuiFocusRequestFlags_None);
     }
+}
+
+static bool StartAnimatedPopupCloseToLevel(int remaining, bool restore_focus_to_window_under_popup)
+{
+    ImGuiContext& g = *GImGui;
+    bool started_animation = false;
+    for (int n = remaining; n < g.OpenPopupStack.Size; n++)
+    {
+        ImGuiPopupData& popup = g.OpenPopupStack[n];
+        if (!IsAnimatedPopup(popup))
+            continue;
+        popup.PopupAnimClosing = true;
+        popup.PopupAnimRestoreFocus = restore_focus_to_window_under_popup;
+        started_animation = true;
+    }
+    return started_animation;
+}
+
+void ImGui::ClosePopupToLevel(int remaining, bool restore_focus_to_window_under_popup)
+{
+    ImGuiContext& g = *GImGui;
+    IMGUI_DEBUG_LOG_POPUP("[popup] ClosePopupToLevel(%d), restore_under=%d\n", remaining, restore_focus_to_window_under_popup);
+    IM_ASSERT(remaining >= 0 && remaining < g.OpenPopupStack.Size);
+    if (StartAnimatedPopupCloseToLevel(remaining, restore_focus_to_window_under_popup))
+        return;
+    FinalizeClosePopupToLevel(remaining, restore_focus_to_window_under_popup);
 }
 
 // Close the popup we have begin-ed into.
@@ -13035,6 +13203,46 @@ void ImGui::CloseCurrentPopup()
         window->DC.NavHideHighlightOneFrame = true;
 }
 
+static void ImGui::UpdateAnimatedPopupState()
+{
+    ImGuiContext& g = *GImGui;
+    if (g.OpenPopupStack.Size == 0)
+        return;
+
+    const float dt = g.IO.DeltaTime;
+    for (ImGuiPopupData& popup : g.OpenPopupStack)
+    {
+        if (!IsAnimatedPopup(popup))
+        {
+            if (!popup.PopupAnimClosing)
+                popup.PopupAnimVisibility = 1.0f;
+            continue;
+        }
+
+        const float duration = popup.PopupAnimClosing ? IMGUI_MODAL_POPUP_ANIM_CLOSE_DURATION : IMGUI_MODAL_POPUP_ANIM_OPEN_DURATION;
+        const float step = (duration > 0.0f) ? (dt / duration) : 1.0f;
+        if (popup.PopupAnimClosing)
+            popup.PopupAnimVisibility = ImMax(0.0f, popup.PopupAnimVisibility - step);
+        else
+            popup.PopupAnimVisibility = ImMin(1.0f, popup.PopupAnimVisibility + step);
+    }
+
+    int remaining = g.OpenPopupStack.Size;
+    while (remaining > 0)
+    {
+        const ImGuiPopupData& popup = g.OpenPopupStack[remaining - 1];
+        if (!popup.PopupAnimClosing || popup.PopupAnimVisibility > 0.0f)
+            break;
+        remaining--;
+    }
+
+    if (remaining < g.OpenPopupStack.Size)
+    {
+        const bool restore_focus = g.OpenPopupStack[remaining].PopupAnimRestoreFocus;
+        FinalizeClosePopupToLevel(remaining, restore_focus);
+    }
+}
+
 // Attention! BeginPopup() adds default flags when calling BeginPopupEx()!
 bool ImGui::BeginPopupEx(ImGuiID id, ImGuiWindowFlags extra_window_flags)
 {
@@ -13052,6 +13260,14 @@ bool ImGui::BeginPopupEx(ImGuiID id, ImGuiWindowFlags extra_window_flags)
     bool is_open = Begin(name, NULL, extra_window_flags | ImGuiWindowFlags_Popup | ImGuiWindowFlags_NoDocking);
     if (!is_open) // NB: Begin can return false when the popup is completely clipped (e.g. zero size display)
         EndPopup();
+    else
+    {
+        ImGuiPopupData& popup_ref = g.OpenPopupStack[g.BeginPopupStack.Size - 1];
+        if (popup_ref.PopupAnimVisibility <= 0.0f && !popup_ref.PopupAnimClosing)
+            popup_ref.PopupAnimVisibility = ImMin(1.0f, g.IO.DeltaTime / IMGUI_MODAL_POPUP_ANIM_OPEN_DURATION);
+        if (popup_ref.PopupAnimClosing)
+            g.CurrentWindow->Flags |= ImGuiWindowFlags_NoInputs;
+    }
     //g.CurrentWindow->FocusRouteParentWindow = g.CurrentWindow->ParentWindowInBeginStack;
     return is_open;
 }
@@ -13071,6 +13287,14 @@ bool ImGui::BeginPopupMenuEx(ImGuiID id, const char* label, ImGuiWindowFlags ext
     bool is_open = Begin(name, NULL, extra_window_flags | ImGuiWindowFlags_Popup);
     if (!is_open) // NB: Begin can return false when the popup is completely clipped (e.g. zero size display)
         EndPopup();
+    else
+    {
+        ImGuiPopupData& popup_ref = g.OpenPopupStack[g.BeginPopupStack.Size - 1];
+        if (popup_ref.PopupAnimVisibility <= 0.0f && !popup_ref.PopupAnimClosing)
+            popup_ref.PopupAnimVisibility = ImMin(1.0f, g.IO.DeltaTime / IMGUI_MODAL_POPUP_ANIM_OPEN_DURATION);
+        if (popup_ref.PopupAnimClosing)
+            g.CurrentWindow->Flags |= ImGuiWindowFlags_NoInputs;
+    }
     //g.CurrentWindow->FocusRouteParentWindow = g.CurrentWindow->ParentWindowInBeginStack;
     return is_open;
 }
@@ -13095,8 +13319,8 @@ bool ImGui::BeginPopup(const char* str_id, ImGuiWindowFlags flags)
 bool ImGui::BeginPopupModal(const char* name, bool* p_open, ImGuiWindowFlags flags)
 {
     ImGuiContext& g = *GImGui;
-    ImGuiWindow* window = g.CurrentWindow;
-    const ImGuiID id = window->GetID(name);
+    ImGuiWindow* parent_window = g.CurrentWindow;
+    const ImGuiID id = parent_window->GetID(name);
     if (!IsPopupOpen(id, ImGuiPopupFlags_None))
     {
         g.NextWindowData.ClearFlags(); // We behave like Begin() and need to consume those values
@@ -13110,19 +13334,30 @@ bool ImGui::BeginPopupModal(const char* name, bool* p_open, ImGuiWindowFlags fla
     // FIXME: Should test for (PosCond & window->SetWindowPosAllowFlags) with the upcoming window.
     if ((g.NextWindowData.HasFlags & ImGuiNextWindowDataFlags_HasPos) == 0)
     {
-        const ImGuiViewport* viewport = window->WasActive ? window->Viewport : GetMainViewport(); // FIXME-VIEWPORT: What may be our reference viewport?
+        const ImGuiViewport* viewport = parent_window->WasActive ? parent_window->Viewport : GetMainViewport(); // FIXME-VIEWPORT: What may be our reference viewport?
         SetNextWindowPos(viewport->GetCenter(), ImGuiCond_FirstUseEver, ImVec2(0.5f, 0.5f));
     }
 
     flags |= ImGuiWindowFlags_Popup | ImGuiWindowFlags_Modal | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoDocking;
     const bool is_open = Begin(name, p_open, flags);
-    if (!is_open || (p_open && !*p_open)) // NB: is_open can be 'false' when the popup is completely clipped (e.g. zero size display)
+    if (!is_open) // NB: is_open can be 'false' when the popup is completely clipped (e.g. zero size display)
     {
         EndPopup();
-        if (is_open)
-            ClosePopupToLevel(g.BeginPopupStack.Size, true);
         return false;
     }
+
+    ImGuiWindow* popup_window = g.CurrentWindow;
+    ImGuiPopupData& popup_ref = g.OpenPopupStack[g.BeginPopupStack.Size - 1];
+    if (popup_ref.PopupAnimVisibility <= 0.0f && !popup_ref.PopupAnimClosing)
+        popup_ref.PopupAnimVisibility = ImMin(1.0f, g.IO.DeltaTime / IMGUI_MODAL_POPUP_ANIM_OPEN_DURATION);
+
+    if (p_open && !*p_open)
+    {
+        popup_ref.PopupAnimClosing = true;
+        popup_ref.PopupAnimRestoreFocus = true;
+    }
+    if (popup_ref.PopupAnimClosing)
+        popup_window->Flags |= ImGuiWindowFlags_NoInputs;
     return is_open;
 }
 
@@ -18095,7 +18330,65 @@ static float DockAnimEaseSmooth(float t)
     return t * t * t * (t * (t * 6.0f - 15.0f) + 10.0f);
 }
 
-static void DockWindowQueueScaleAnim(ImGuiContext* ctx, ImGuiWindow* window, const ImVec2& from_pos, const ImVec2& from_size, const ImVec2& to_pos, const ImVec2& to_size, bool overshoot, float duration, float overshoot_strength)
+static float DockAnimEaseOutCubic(float t)
+{
+    t = ImSaturate(t);
+    const float inv_t = 1.0f - t;
+    return 1.0f - inv_t * inv_t * inv_t;
+}
+
+static float DockAnimEaseInOutCubic(float t)
+{
+    t = ImSaturate(t);
+    if (t < 0.5f)
+        return 4.0f * t * t * t;
+    const float inv_t = -2.0f * t + 2.0f;
+    return 1.0f - (inv_t * inv_t * inv_t) * 0.5f;
+}
+
+static float DockAnimEaseOutBack(float t, float strength)
+{
+    t = ImSaturate(t);
+    const float s = 1.70158f * strength;
+    const float t1 = t - 1.0f;
+    return 1.0f + (t1 * t1) * ((s + 1.0f) * t1 + s);
+}
+
+static ImVec2 DockAnimEvaluateSize(const ImGuiWindow* window, float t)
+{
+    const ImVec2 from_size = window->DockAnimFromSize;
+    const ImVec2 to_size = window->DockAnimToSize;
+    const ImVec2 max_size(ImMax(from_size.x, to_size.x), ImMax(from_size.y, to_size.y));
+    if (window->DockAnimUndocking)
+    {
+        const ImVec2 peak_size = max_size * 1.055f;
+        const float pop_t = ImSaturate(t / 0.34f);
+        const float settle_t = ImSaturate((t - 0.34f) / 0.66f);
+        if (settle_t <= 0.0f)
+            return ImLerp(from_size, peak_size, DockAnimEaseOutCubic(pop_t));
+        return ImLerp(peak_size, to_size, DockAnimEaseOutCubic(settle_t));
+    }
+
+    const ImVec2 bridge_size = ImLerp(from_size, to_size, 0.38f);
+    const ImVec2 peak_size(ImMax(bridge_size.x, max_size.x * 0.94f) * 1.04f,
+                           ImMax(bridge_size.y, max_size.y * 0.94f) * 1.04f);
+    const float swell_t = ImSaturate(t / 0.56f);
+    const float settle_t = ImSaturate((t - 0.56f) / 0.44f);
+    if (settle_t <= 0.0f)
+        return ImLerp(from_size, peak_size, DockAnimEaseOutCubic(swell_t));
+    return ImLerp(peak_size, to_size, DockAnimEaseOutBack(settle_t, 0.48f * window->DockAnimOvershootStrength + 0.30f));
+}
+
+static ImVec2 DockAnimEvaluateCenter(const ImGuiWindow* window, float t)
+{
+    const ImVec2 from_center = window->DockAnimFromPos + window->DockAnimFromSize * 0.5f;
+    const ImVec2 to_center = window->DockAnimToPos + window->DockAnimToSize * 0.5f;
+    if (window->DockAnimUndocking)
+        return ImLerp(from_center, to_center, DockAnimEaseOutCubic(t));
+    return ImLerp(from_center, to_center, DockAnimEaseOutBack(t, 0.30f * window->DockAnimOvershootStrength + 0.38f));
+}
+
+static void DockWindowQueueScaleAnim(ImGuiContext* ctx, ImGuiWindow* window, const ImVec2& from_pos, const ImVec2& from_size, const ImVec2& to_pos, const ImVec2& to_size, bool undocking, bool overshoot, float duration, float overshoot_strength)
 {
     if (to_size.x <= 0.0f || to_size.y <= 0.0f)
         return;
@@ -18106,6 +18399,7 @@ static void DockWindowQueueScaleAnim(ImGuiContext* ctx, ImGuiWindow* window, con
     window->DockAnimStartTime = (float)ctx->Time;
     window->DockAnimDuration = duration;
     window->DockAnimActive = true;
+    window->DockAnimUndocking = undocking;
     window->DockAnimOvershoot = overshoot;
     window->DockAnimOvershootStrength = overshoot_strength;
 }
@@ -18269,12 +18563,12 @@ void ImGui::DockContextProcessDock(ImGuiContext* ctx, ImGuiDockRequest* req)
         const ImVec2 pos_delta = target_pos - from_pos;
         const float dist = size_delta.x * size_delta.x + size_delta.y * size_delta.y + pos_delta.x * pos_delta.x + pos_delta.y * pos_delta.y;
         if (dist > 1.0f)
-            DockWindowQueueScaleAnim(ctx, window, from_pos, from_size, target_pos, target_size, true, 0.20f, 0.75f);
+            DockWindowQueueScaleAnim(ctx, window, from_pos, from_size, target_pos, target_size, false, true, 0.24f, 0.60f);
         else
         {
-            const ImVec2 scaled = target_size * 0.92f;
-            const ImVec2 centered = target_pos + (target_size - scaled) * 0.5f;
-            DockWindowQueueScaleAnim(ctx, window, centered, scaled, target_pos, target_size, true, 0.20f, 0.75f);
+            const ImVec2 pre_plop_size = target_size * 0.96f;
+            const ImVec2 pre_plop_pos = target_pos + (target_size - pre_plop_size) * 0.5f;
+            DockWindowQueueScaleAnim(ctx, window, pre_plop_pos, pre_plop_size, target_pos, target_size, false, true, 0.22f, 0.54f);
         }
     }
     MarkIniSettingsDirty();
@@ -18323,10 +18617,7 @@ void ImGui::DockContextProcessUndockWindow(ImGuiContext* ctx, ImGuiWindow* windo
     window->Size = window->SizeFull = FixLargeWindowsWhenUndocking(window->SizeFull, window->Viewport);
     ImVec2 to_pos = window->Pos;
     ImVec2 to_size = window->SizeFull;
-    ImVec2 size_delta = to_size - from_size;
-    ImVec2 pos_delta = to_pos - from_pos;
-    const float dist = size_delta.x * size_delta.x + size_delta.y * size_delta.y + pos_delta.x * pos_delta.x + pos_delta.y * pos_delta.y;
-    DockWindowQueueScaleAnim(ctx, window, from_pos, from_size, to_pos, to_size, true, 0.28f, 1.05f);
+    DockWindowQueueScaleAnim(ctx, window, from_pos, from_size, to_pos, to_size, true, true, 0.18f, 0.72f);
 
     MarkIniSettingsDirty();
 }

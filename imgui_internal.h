@@ -1,4 +1,5 @@
 // dear imgui, v1.92.5 WIP
+// ModuGUI Fork V1.1
 // (internal structures/api)
 
 // You may use this file to debug, understand or extend Dear ImGui features but we don't provide any guarantee of forward compatibility.
@@ -1488,6 +1489,9 @@ struct ImGuiPopupData
     ImGuiID             OpenParentId;   // Set on OpenPopup(), we need this to differentiate multiple menu sets from each others (e.g. inside menu bar vs loose menu items)
     ImVec2              OpenPopupPos;   // Set on OpenPopup(), preferred popup position (typically == OpenMousePos when using mouse)
     ImVec2              OpenMousePos;   // Set on OpenPopup(), copy of mouse position at the time of opening popup
+    float               PopupAnimVisibility; // 0.0..1.0 visibility for animated popups
+    bool                PopupAnimClosing; // True while an animated popup is exiting
+    bool                PopupAnimRestoreFocus; // Restore focus when delayed close completes
 
     ImGuiPopupData()    { memset(this, 0, sizeof(*this)); ParentNavLayer = OpenFrameCount = -1; }
 };
@@ -2846,6 +2850,7 @@ struct IMGUI_API ImGuiWindow
     float                   DockAnimStartTime;                  // Docking animation start time
     float                   DockAnimDuration;                   // Docking animation duration
     bool                    DockAnimActive;                     // Docking animation active
+    bool                    DockAnimUndocking;                  // Docking animation is an undock-to-cursor motion
     bool                    DockAnimOvershoot;                  // Docking animation overshoot (undock)
     float                   DockAnimOvershootStrength;          // Docking animation overshoot strength
     ImVec2                  ContentSize;                        // Size of contents/scrollable client area (calculated from the extents reach of the cursor) from previous frame. Does not include window decoration or window padding.
