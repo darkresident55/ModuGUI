@@ -4442,4 +4442,24 @@ typedef ImFontAtlasRect ImFontAtlasCustomRect;
 #endif
 #endif
 
+#ifndef IMGUI_DISABLE
+namespace ModuGUI
+{
+    using namespace ImGui;
+
+    inline bool SubsectionFoldout(const char* label, ImGuiTreeNodeFlags flags = 0)
+    {
+        flags |= ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_SpanAvailWidth;
+        flags &= ~ImGuiTreeNodeFlags_Framed;
+
+        ImGui::PushStyleColor(ImGuiCol_Header,        ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+        ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(1.0f, 1.0f, 1.0f, 0.06f));
+        ImGui::PushStyleColor(ImGuiCol_HeaderActive,  ImVec4(1.0f, 1.0f, 1.0f, 0.10f));
+        const bool open = ImGui::TreeNodeEx(label, flags);
+        ImGui::PopStyleColor(3);
+        return open;
+    }
+}
+#endif
+
 #endif // #ifndef IMGUI_DISABLE
