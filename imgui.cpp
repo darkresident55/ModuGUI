@@ -1380,6 +1380,9 @@ static void             FinalizeClosePopupToLevel(int remaining, bool restore_fo
 static void             SetLastItemDataForWindow(ImGuiWindow* window, const ImRect& rect);
 static void             SetLastItemDataForChildWindowItem(ImGuiWindow* window, const ImRect& rect);
 
+static ImVec2           GAnimatedPopupLastNonModalCenter = ImVec2(FLT_MAX, FLT_MAX);
+static double           GAnimatedPopupLastNonModalTime = -FLT_MAX;
+
 // Viewports
 const ImGuiID           IMGUI_VIEWPORT_DEFAULT_ID = 0x11111111; // Using an arbitrary constant instead of e.g. ImHashStr("ViewportDefault", 0); so it's easier to spot in the debugger. The exact value doesn't matter.
 static ImGuiViewportP*  AddUpdateViewport(ImGuiWindow* window, ImGuiID id, const ImVec2& platform_pos, const ImVec2& size, ImGuiViewportFlags flags);
@@ -8734,19 +8737,15 @@ static float AnimatedModalPopupScale(const ImGuiPopupData& popup)
     if (!popup.PopupAnimClosing)
     {
         const float t = AnimatedModalPopupEaseOutCubic(visibility);
-        const float overshoot_t = ImSaturate(t / 0.74f);
-        const float settle_t = ImSaturate((t - 0.74f) / 0.26f);
+        const float overshoot_t = ImSaturate(t / 0.80f);
+        const float settle_t = ImSaturate((t - 0.80f) / 0.20f);
         if (settle_t <= 0.0f)
-            return ImLerp(0.86f, 1.08f, overshoot_t);
-        return ImLerp(1.08f, 1.0f, AnimatedModalPopupEaseOutCubic(settle_t));
+            return ImLerp(0.92f, 1.024f, overshoot_t);
+        return ImLerp(1.024f, 1.0f, AnimatedModalPopupEaseOutCubic(settle_t));
     }
 
     const float close_t = AnimatedModalPopupEaseOutCubic(1.0f - visibility);
-    const float swell_t = ImSaturate(close_t / 0.30f);
-    const float depart_t = ImSaturate((close_t - 0.30f) / 0.70f);
-    if (depart_t <= 0.0f)
-        return ImLerp(1.0f, 1.08f, swell_t);
-    return ImLerp(1.08f, 0.76f, AnimatedModalPopupEaseOutCubic(depart_t));
+    return ImLerp(1.0f, 0.91f, close_t);
 }
 
 static float AnimatedModalPopupAlpha(const ImGuiPopupData& popup)
@@ -8774,18 +8773,15 @@ static const ImGuiPopupData* FindAnimatedPopupForWindow(ImGuiWindow* window)
 
 static ImVec2 AnimatedPopupOffset(const ImGuiWindow* window, const ImGuiPopupData& popup)
 {
+    if (window && (window->Flags & ImGuiWindowFlags_Modal) != 0)
+        return ImVec2(0.0f, 0.0f);
+
     const float visibility = ImSaturate(popup.PopupAnimVisibility);
     const float phase = popup.PopupAnimClosing
         ? AnimatedModalPopupEaseOutCubic(1.0f - visibility)
         : (1.0f - AnimatedModalPopupEaseOutCubic(visibility));
 
-    ImVec2 offset = popup.PopupAnimHandoffOffset * phase;
-    if (window && (window->Flags & ImGuiWindowFlags_ChildMenu) == 0 && strncmp(window->Name, "##Combo_", 8) == 0)
-    {
-        if (window->AutoPosLastDirection == ImGuiDir_Down || window->AutoPosLastDirection == ImGuiDir_Left)
-            offset.y += -phase * 16.0f;
-        return offset;
-    }
+    ImVec2 offset = popup.PopupAnimHandoffOffset * phase * 0.55f;
     if (!window || (window->Flags & ImGuiWindowFlags_ChildMenu) == 0)
         return offset;
 
@@ -8799,7 +8795,7 @@ static ImVec2 AnimatedPopupOffset(const ImGuiWindow* window, const ImGuiPopupDat
     else
         side = 1.0f;
 
-    offset.x += -side * phase * 22.0f;
+    offset.x += -side * phase * 18.0f;
     return offset;
 }
 
@@ -13205,6 +13201,16 @@ void ImGui::OpenPopupEx(ImGuiID id, ImGuiPopupFlags popup_flags)
                     popup_ref.PopupAnimHandoffOffset.y = ImClamp(handoff.y, -18.0f, 18.0f);
                 }
             }
+            if (popup_ref.PopupAnimHandoffOffset.x == 0.0f &&
+                popup_ref.PopupAnimHandoffOffset.y == 0.0f &&
+                GAnimatedPopupLastNonModalCenter.x != FLT_MAX &&
+                g.Time - GAnimatedPopupLastNonModalTime < 0.75)
+            {
+                const ImVec2 target_center = popup_ref.OpenPopupPos;
+                const ImVec2 handoff = (GAnimatedPopupLastNonModalCenter - target_center) * 0.18f;
+                popup_ref.PopupAnimHandoffOffset.x = ImClamp(handoff.x, -32.0f, 32.0f);
+                popup_ref.PopupAnimHandoffOffset.y = ImClamp(handoff.y, -18.0f, 18.0f);
+            }
             // Reopen: close child popups if any, then flag popup for open/reopen (set position, focus, init navigation)
             ClosePopupToLevel(current_stack_size, true);
             if (g.OpenPopupStack.Size > current_stack_size)
@@ -13283,8 +13289,8 @@ void ImGui::ClosePopupsExceptModals()
         ClosePopupToLevel(popup_count_to_keep, true);
 }
 
-static const float IMGUI_MODAL_POPUP_ANIM_OPEN_DURATION = 0.16f;
-static const float IMGUI_MODAL_POPUP_ANIM_CLOSE_DURATION = 0.14f;
+static const float IMGUI_MODAL_POPUP_ANIM_OPEN_DURATION = 0.13f;
+static const float IMGUI_MODAL_POPUP_ANIM_CLOSE_DURATION = 0.10f;
 
 static bool IsAnimatedPopup(const ImGuiPopupData& popup)
 {
@@ -13320,6 +13326,17 @@ static void ImGui::FinalizeClosePopupToLevel(int remaining, bool restore_focus_t
     if (g.DebugLogFlags & ImGuiDebugLogFlags_EventPopup)
         for (int n = remaining; n < g.OpenPopupStack.Size; n++)
             IMGUI_DEBUG_LOG_POPUP("[popup] - Closing PopupID 0x%08X Window \"%s\"\n", g.OpenPopupStack[n].PopupId, g.OpenPopupStack[n].Window ? g.OpenPopupStack[n].Window->Name : NULL);
+
+    for (int n = remaining; n < g.OpenPopupStack.Size; n++)
+    {
+        ImGuiPopupData& popup = g.OpenPopupStack[n];
+        if (!IsAnimatedPopup(popup) ||
+            popup.Window == NULL ||
+            (popup.Window->Flags & ImGuiWindowFlags_Modal) != 0)
+            continue;
+        GAnimatedPopupLastNonModalCenter = popup.Window->Rect().GetCenter();
+        GAnimatedPopupLastNonModalTime = g.Time;
+    }
 
     ImGuiPopupData prev_popup = g.OpenPopupStack[remaining];
     g.OpenPopupStack.resize(remaining);
