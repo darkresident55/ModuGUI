@@ -1521,6 +1521,11 @@ ImGuiStyle::ImGuiStyle()
     HoverFlagsForTooltipMouse   = ImGuiHoveredFlags_Stationary | ImGuiHoveredFlags_DelayShort | ImGuiHoveredFlags_AllowWhenDisabled;    // Default flags when using IsItemHovered(ImGuiHoveredFlags_ForTooltip) or BeginItemTooltip()/SetItemTooltip() while using mouse.
     HoverFlagsForTooltipNav     = ImGuiHoveredFlags_NoSharedDelay | ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled;  // Default flags when using IsItemHovered(ImGuiHoveredFlags_ForTooltip) or BeginItemTooltip()/SetItemTooltip() while using keyboard/gamepad.
 
+    // Modularity: glass extensions default to off, themes opt in.
+    GlassBlur                   = false;
+    CheckboxSwitch              = false;
+    SliderPill                  = false;
+
     // [Internal]
     _MainScale                  = 1.0f;
     _NextFrameFontSizeBase      = 0.0f;
@@ -4178,6 +4183,11 @@ ImGuiContext::ImGuiContext(ImFontAtlas* shared_font_atlas)
         IO.Fonts->OwnerContext = this;
     WithinEndChildID = 0;
     TestEngine = NULL;
+
+    // Modularity: glass blur-behind is inert until the app registers a renderer.
+    GlassBlurCallback = NULL;
+    GlassBlurCallbackUserData = NULL;
+    GlassBlurTexture = 0;
 
     InputEventsNextMouseSource = ImGuiMouseSource_Mouse;
     InputEventsNextEventId = 1;
@@ -7421,6 +7431,15 @@ static void ImGui::RenderWindowOuterBorders(ImGuiWindow* window)
     }
 }
 
+// Modularity: register (or unregister) the app-side blur renderer. See the big comment in imgui.h.
+void ImGui::SetGlassBlurRenderer(ImDrawCallback capture_callback, void* callback_user_data, ImTextureID blur_texture)
+{
+    ImGuiContext& g = *GImGui;
+    g.GlassBlurCallback = capture_callback;
+    g.GlassBlurCallbackUserData = callback_user_data;
+    g.GlassBlurTexture = blur_texture;
+}
+
 // Draw background and borders
 // Draw and handle scrollbars
 void ImGui::RenderWindowDecorations(ImGuiWindow* window, const ImRect& title_bar_rect, bool title_bar_is_highlight, bool handle_borders_and_resize_grips, int resize_grip_count, const ImU32 resize_grip_col[4], float resize_grip_draw_size)
@@ -7483,6 +7502,29 @@ void ImGui::RenderWindowDecorations(ImGuiWindow* window, const ImRect& title_bar
                 }
                 if (override_alpha)
                     bg_col = (bg_col & ~IM_COL32_A_MASK) | (IM_F32_TO_INT8_SAT(alpha) << IM_COL32_A_SHIFT);
+            }
+
+            // Modularity: frosted glass. Emit [capture callback -> reset render state -> blurred
+            // backbuffer image] under the tint rect below. Windows render back-to-front, so at the
+            // moment the callback executes, everything behind this window is already on the
+            // framebuffer. Only for translucent top-level windows living in the main viewport:
+            // ViewportOwned windows were already forced opaque above, docked windows only have the
+            // clear color behind them, and child windows would re-blur their own parent for nothing.
+            if (g.Style.GlassBlur && g.GlassBlurCallback != NULL && g.GlassBlurTexture != 0
+                && !window->ViewportOwned && !window->DockIsActive && !(flags & ImGuiWindowFlags_DockNodeHost)
+                && !(flags & ImGuiWindowFlags_ChildWindow) && window->Viewport == g.Viewports[0]
+                && ((bg_col >> IM_COL32_A_SHIFT) & 0xFF) < 0xFF
+                && window->Size.x >= 1.0f && window->Size.y >= 1.0f
+                && window->Viewport->Size.x >= 1.0f && window->Viewport->Size.y >= 1.0f)
+            {
+                ImGuiViewportP* viewport = window->Viewport;
+                const ImVec2 p_min = window->Pos;
+                const ImVec2 p_max = window->Pos + window->Size;
+                const ImVec2 uv_min((p_min.x - viewport->Pos.x) / viewport->Size.x, (p_min.y - viewport->Pos.y) / viewport->Size.y);
+                const ImVec2 uv_max((p_max.x - viewport->Pos.x) / viewport->Size.x, (p_max.y - viewport->Pos.y) / viewport->Size.y);
+                window->DrawList->AddCallback(g.GlassBlurCallback, g.GlassBlurCallbackUserData);
+                window->DrawList->AddCallback(ImDrawCallback_ResetRenderState, NULL);
+                window->DrawList->AddImageRounded(g.GlassBlurTexture, p_min, p_max, uv_min, uv_max, IM_COL32_WHITE, window_rounding);
             }
 
             // Render, for docked windows and host windows we ensure bg goes before decorations

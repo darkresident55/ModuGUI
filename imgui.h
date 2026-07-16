@@ -2425,6 +2425,12 @@ struct ImGuiStyle
     ImGuiHoveredFlags HoverFlagsForTooltipMouse;// Default flags when using IsItemHovered(ImGuiHoveredFlags_ForTooltip) or BeginItemTooltip()/SetItemTooltip() while using mouse.
     ImGuiHoveredFlags HoverFlagsForTooltipNav;  // Default flags when using IsItemHovered(ImGuiHoveredFlags_ForTooltip) or BeginItemTooltip()/SetItemTooltip() while using keyboard/gamepad.
 
+    // Modularity: glass UI extensions. Keep these at the end of the field list, the editor
+    // serializes ImGuiStyle as a raw blob and a size change invalidates old blobs (on purpose).
+    bool        GlassBlur;                  // Frost whatever is behind translucent windows. Only does something once the app registers a renderer via ImGui::SetGlassBlurRenderer().
+    bool        CheckboxSwitch;             // Draw Checkbox() as a sliding pill switch instead of the square + check mark.
+    bool        SliderPill;                 // Draw horizontal sliders as a thin track + fill + round knob (SliderGrab = knob, SliderGrabActive = fill) instead of the boxy grab.
+
     // [Internal]
     float       _MainScale;                 // FIXME-WIP: Reference scale, as applied by ScaleAllSizes().
     float       _NextFrameFontSizeBase;     // FIXME: Temporary hack until we finish remaining work.
@@ -4269,6 +4275,25 @@ struct ImGuiPlatformImeData
 
     ImGuiPlatformImeData()          { memset(this, 0, sizeof(*this)); }
 };
+
+//-----------------------------------------------------------------------------
+// [SECTION] Modularity: glass blur-behind extension
+//-----------------------------------------------------------------------------
+// Real frosted-glass windows, not the fake "just lower the alpha" kind. The app hands us a
+// capture callback + a texture id. When style.GlassBlur is on, every translucent top-level
+// window in the main viewport emits, in draw order: [capture callback] -> [reset render state]
+// -> [rounded image of blur_texture in viewport-normalized UVs, top-left origin].
+// Because windows render back-to-front, the callback fires mid RenderDrawData at the exact
+// moment everything BEHIND that window is already on the framebuffer. The callback's job:
+// grab the framebuffer, blur it into blur_texture (top-left origin, so flip if you blit from
+// GL), then restore whatever bindings it touched (the reset-state command handles the rest).
+// Pass callback = NULL or texture = 0 to turn the whole thing off again.
+//-----------------------------------------------------------------------------
+
+namespace ImGui
+{
+    IMGUI_API void  SetGlassBlurRenderer(ImDrawCallback capture_callback, void* callback_user_data, ImTextureID blur_texture);
+}
 
 //-----------------------------------------------------------------------------
 // [SECTION] Obsolete functions and types

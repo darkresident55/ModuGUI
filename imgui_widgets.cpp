@@ -1263,8 +1263,12 @@ bool ImGui::Checkbox(const char* label, bool* v)
     const ImVec2 label_size = CalcTextSize(label, NULL, true);
 
     const float square_sz = GetFrameHeight();
+    // Modularity: in switch mode the hit box widens into a pill. Everything downstream
+    // (label position, total_bb) keys off check_w so both modes lay out the same way.
+    const bool as_switch = style.CheckboxSwitch;
+    const float check_w = as_switch ? IM_TRUNC(square_sz * 1.70f) : square_sz;
     const ImVec2 pos = window->DC.CursorPos;
-    const ImRect total_bb(pos, pos + ImVec2(square_sz + (label_size.x > 0.0f ? style.ItemInnerSpacing.x + label_size.x : 0.0f), label_size.y + style.FramePadding.y * 2.0f));
+    const ImRect total_bb(pos, pos + ImVec2(check_w + (label_size.x > 0.0f ? style.ItemInnerSpacing.x + label_size.x : 0.0f), label_size.y + style.FramePadding.y * 2.0f));
     ItemSize(total_bb, style.FramePadding.y);
     const bool is_visible = ItemAdd(total_bb, id);
     const bool is_multi_select = (g.LastItemData.ItemFlags & ImGuiItemFlags_IsMultiSelect) != 0;
@@ -1296,7 +1300,7 @@ bool ImGui::Checkbox(const char* label, bool* v)
         MarkItemEdited(id);
     }
 
-    const ImRect check_bb(pos, pos + ImVec2(square_sz, square_sz));
+    const ImRect check_bb(pos, pos + ImVec2(check_w, square_sz));
     const bool mixed_value = (g.LastItemData.ItemFlags & ImGuiItemFlags_MixedValue) != 0;
     if (is_visible)
     {
@@ -1315,6 +1319,29 @@ bool ImGui::Checkbox(const char* label, bool* v)
         const ImRect animated_check_bb = ScaleRectAroundCenter(check_bb, box_scale);
 
         RenderNavCursor(total_bb, id);
+        if (as_switch)
+        {
+            // Modularity: sliding pill switch. Track fades FrameBg -> CheckMark while the white
+            // knob rides mark_t across, with a little horizontal squish while held.
+            const ImRect track_bb = ScaleRectAroundCenter(check_bb, 1.0f + hover_t * 0.03f + held_t * 0.02f);
+            const float track_r = track_bb.GetHeight() * 0.5f;
+            ImVec4 track_col4 = ImLerp(GetStyleColorVec4(hovered ? ImGuiCol_FrameBgHovered : ImGuiCol_FrameBg), GetStyleColorVec4(ImGuiCol_CheckMark), mark_t);
+            window->DrawList->AddRectFilled(track_bb.Min, track_bb.Max, GetColorU32(track_col4), track_r);
+            if (style.FrameBorderSize > 0.0f)
+                window->DrawList->AddRect(track_bb.Min, track_bb.Max, GetColorU32(ImGuiCol_Border), track_r, 0, style.FrameBorderSize);
+
+            const float knob_pad = ImMax(1.0f, IM_TRUNC(square_sz * 0.10f));
+            const float knob_r = track_r - knob_pad;
+            const float knob_t = mixed_value ? 0.5f : mark_t; // tristate parks the knob in the middle
+            const float knob_cx = ImLerp(track_bb.Min.x + knob_pad + knob_r, track_bb.Max.x - knob_pad - knob_r, knob_t);
+            const float knob_cy = track_bb.GetCenter().y;
+            const float stretch = knob_r * held_t * 0.30f;
+            ImRect knob_bb(knob_cx - knob_r - stretch * knob_t, knob_cy - knob_r, knob_cx + knob_r + stretch * (1.0f - knob_t), knob_cy + knob_r);
+            window->DrawList->AddRectFilled(knob_bb.Min + ImVec2(0.0f, 1.0f), knob_bb.Max + ImVec2(0.0f, 1.0f), GetColorU32(ImVec4(0.0f, 0.0f, 0.0f, 0.22f)), knob_r);
+            window->DrawList->AddRectFilled(knob_bb.Min, knob_bb.Max, GetColorU32(ImVec4(1.0f, 1.0f, 1.0f, 1.0f)), knob_r);
+        }
+        else
+        {
         RenderFrame(animated_check_bb.Min, animated_check_bb.Max,
                     GetColorU32((held && hovered) ? ImGuiCol_FrameBgActive : hovered ? ImGuiCol_FrameBgHovered : ImGuiCol_FrameBg),
                     true, style.FrameRounding * box_scale);
@@ -1337,6 +1364,7 @@ bool ImGui::Checkbox(const char* label, bool* v)
                 : ImLerp(0.72f, 1.0f, mark_t);
             const float mark_alpha = *v ? ImSaturate(0.45f + mark_t * 0.55f) : mark_t;
             TransformDrawListVertsRange(window->DrawList, vtx_start, animated_check_bb.GetCenter(), mark_scale, mark_alpha);
+        }
         }
     }
     const ImVec2 label_pos = ImVec2(check_bb.Max.x + style.ItemInnerSpacing.x, check_bb.Min.y + style.FramePadding.y);
@@ -3394,9 +3422,12 @@ bool ImGui::SliderScalar(const char* label, ImGuiDataType data_type, void* p_dat
     }
 
     // Draw frame
+    // Modularity: in pill mode the boxy frame is replaced by a thin track drawn after the
+    // behavior pass (the fill needs to know where the knob ended up).
     const ImU32 frame_col = GetColorU32(g.ActiveId == id ? ImGuiCol_FrameBgActive : hovered ? ImGuiCol_FrameBgHovered : ImGuiCol_FrameBg);
     RenderNavCursor(frame_bb, id);
-    RenderFrame(frame_bb.Min, frame_bb.Max, frame_col, true, g.Style.FrameRounding);
+    if (!style.SliderPill)
+        RenderFrame(frame_bb.Min, frame_bb.Max, frame_col, true, g.Style.FrameRounding);
 
     // Slider behavior
     ImRect grab_bb;
@@ -3423,10 +3454,29 @@ bool ImGui::SliderScalar(const char* label, ImGuiDataType data_type, void* p_dat
         const float release_phase = 1.0f - ImSaturate(*release_anim);
         const float release_bounce = sinf(release_phase * IM_PI) * ImSaturate(*release_anim);
         const float grab_scale = 1.0f + ImSaturate(*hover_anim) * 0.08f + ImSaturate(*active_anim) * 0.14f + release_bounce * 0.06f;
+        if (style.SliderPill)
+        {
+            // Modularity: settings-app slider. thin rounded track, SliderGrabActive fill up
+            // to the knob, white round knob with the same shadow recipe as the switch knob.
+            const float cy = (frame_bb.Min.y + frame_bb.Max.y) * 0.5f;
+            const float track_h = ImMax(3.0f, IM_TRUNC(frame_bb.GetHeight() * 0.24f));
+            const float inset = track_h * 0.5f + 1.0f;
+            const ImRect track_bb(ImVec2(frame_bb.Min.x + inset, cy - track_h * 0.5f), ImVec2(frame_bb.Max.x - inset, cy + track_h * 0.5f));
+            const float knob_cx = ImClamp((grab_bb.Min.x + grab_bb.Max.x) * 0.5f, track_bb.Min.x, track_bb.Max.x);
+            window->DrawList->AddRectFilled(track_bb.Min, track_bb.Max, frame_col, track_h * 0.5f);
+            if (knob_cx > track_bb.Min.x + 1.0f)
+                window->DrawList->AddRectFilled(track_bb.Min, ImVec2(knob_cx, track_bb.Max.y), GetColorU32(ImGuiCol_SliderGrabActive), track_h * 0.5f);
+            const float knob_r = ImMax(track_h, frame_bb.GetHeight() * 0.34f) * grab_scale;
+            window->DrawList->AddCircleFilled(ImVec2(knob_cx, cy + 1.0f), knob_r, GetColorU32(ImVec4(0.0f, 0.0f, 0.0f, 0.25f)));
+            window->DrawList->AddCircleFilled(ImVec2(knob_cx, cy), knob_r, GetColorU32(ImVec4(1.0f, 1.0f, 1.0f, 1.0f)));
+        }
+        else
+        {
         const ImRect animated_grab_bb = ScaleRectAroundCenter(grab_bb, grab_scale);
         window->DrawList->AddRectFilled(animated_grab_bb.Min, animated_grab_bb.Max,
                                         GetColorU32(is_active ? ImGuiCol_SliderGrabActive : ImGuiCol_SliderGrab),
                                         style.GrabRounding * grab_scale);
+        }
     }
 
     // Display value using user-provided display format so user can add prefix/suffix/decorations to the value.

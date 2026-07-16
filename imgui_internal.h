@@ -2395,6 +2395,11 @@ struct ImGuiContext
     ImGuiID                 WithinEndChildID;                   // Set within EndChild()
     void*                   TestEngine;                         // Test engine user data
 
+    // Modularity: glass blur-behind plumbing (see ImGui::SetGlassBlurRenderer in imgui.h)
+    ImDrawCallback          GlassBlurCallback;                  // App-provided "capture + blur the framebuffer now" callback, ran mid render
+    void*                   GlassBlurCallbackUserData;          // Passed through to the callback untouched
+    ImTextureID             GlassBlurTexture;                   // Where the callback deposits the blurred frame. 0 = glass fully disabled
+
     // Inputs
     ImVector<ImGuiInputEvent> InputEventsQueue;                 // Input events which will be trickled/written into IO structure.
     ImVector<ImGuiInputEvent> InputEventsTrail;                 // Past input events processed in NewFrame(). This is to allow domain-specific application to access e.g mouse/pen trail.
