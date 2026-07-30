@@ -1267,6 +1267,12 @@ bool ImGui::Checkbox(const char* label, bool* v)
     // (label position, total_bb) keys off check_w so both modes lay out the same way.
     const bool as_switch = style.CheckboxSwitch;
     const float check_w = as_switch ? IM_TRUNC(square_sz * 1.70f) : square_sz;
+    // Modularity: SetNextItemCheckboxIcons() payload, read before ItemAdd() clears HasFlags.
+    const bool has_knob_icons = as_switch && (g.NextItemData.HasFlags & ImGuiNextItemDataFlags_HasCheckboxIcons) != 0;
+    const ImTextureID knob_icon_off = has_knob_icons ? g.NextItemData.CheckboxIconOff : (ImTextureID)0;
+    const ImTextureID knob_icon_on = has_knob_icons ? g.NextItemData.CheckboxIconOn : (ImTextureID)0;
+    const ImVec2 knob_icon_uv0 = has_knob_icons ? g.NextItemData.CheckboxIconUv0 : ImVec2(0.0f, 0.0f);
+    const ImVec2 knob_icon_uv1 = has_knob_icons ? g.NextItemData.CheckboxIconUv1 : ImVec2(1.0f, 1.0f);
     const ImVec2 pos = window->DC.CursorPos;
     const ImRect total_bb(pos, pos + ImVec2(check_w + (label_size.x > 0.0f ? style.ItemInnerSpacing.x + label_size.x : 0.0f), label_size.y + style.FramePadding.y * 2.0f));
     ItemSize(total_bb, style.FramePadding.y);
@@ -1339,6 +1345,21 @@ bool ImGui::Checkbox(const char* label, bool* v)
             ImRect knob_bb(knob_cx - knob_r - stretch * knob_t, knob_cy - knob_r, knob_cx + knob_r + stretch * (1.0f - knob_t), knob_cy + knob_r);
             window->DrawList->AddRectFilled(knob_bb.Min + ImVec2(0.0f, 1.0f), knob_bb.Max + ImVec2(0.0f, 1.0f), GetColorU32(ImVec4(0.0f, 0.0f, 0.0f, 0.22f)), knob_r);
             window->DrawList->AddRectFilled(knob_bb.Min, knob_bb.Max, GetColorU32(ImVec4(1.0f, 1.0f, 1.0f, 1.0f)), knob_r);
+
+            // Modularity: optional off/on artwork riding the knob. Drawn on the unstretched
+            // circle so the squish while held never distorts the glyph, and cross-faded on
+            // mark_t so the swap happens with the slide instead of snapping at the end.
+            if (has_knob_icons && knob_r > 0.5f)
+            {
+                const float icon_r = knob_r * 0.90f;
+                const ImVec2 icon_min(knob_cx - icon_r, knob_cy - icon_r);
+                const ImVec2 icon_max(knob_cx + icon_r, knob_cy + icon_r);
+                const float fade = mixed_value ? 0.5f : mark_t;
+                if (knob_icon_off != 0 && fade < 0.999f)
+                    window->DrawList->AddImage(knob_icon_off, icon_min, icon_max, knob_icon_uv0, knob_icon_uv1, GetColorU32(ImVec4(1.0f, 1.0f, 1.0f, 1.0f - fade)));
+                if (knob_icon_on != 0 && fade > 0.001f)
+                    window->DrawList->AddImage(knob_icon_on, icon_min, icon_max, knob_icon_uv0, knob_icon_uv1, GetColorU32(ImVec4(1.0f, 1.0f, 1.0f, fade)));
+            }
         }
         else
         {
@@ -9580,7 +9601,12 @@ bool ImGui::MenuItemEx(const char* label, const char* icon, const char* shortcut
         // Menu item inside a vertical menu
         // (In a typical menu window where all items are BeginMenu() or MenuItem() calls, extra_w will always be 0.0f.
         //  Only when they are other items sticking out we're going to add spacing, yet only register minimum width into the layout system.)
+        // Modularity: an image icon registered for this label takes the icon column, so plain
+        // MenuItem() call sites get artwork without a separate widget.
+        const ImGuiNamedIcon* image_icon = FindNamedIcon(label);
         float icon_w = (icon && icon[0]) ? CalcTextSize(icon, NULL).x : 0.0f;
+        if (image_icon != NULL)
+            icon_w = ImMax(icon_w, g.FontSize);
         float shortcut_w = (shortcut && shortcut[0]) ? CalcTextSize(shortcut, NULL).x : 0.0f;
         float checkmark_w = IM_TRUNC(g.FontSize * 1.20f);
         float min_w = window->DC.MenuColumns.DeclColumns(icon_w, label_size.x, shortcut_w, checkmark_w); // Feedback for next frame
@@ -9589,7 +9615,15 @@ bool ImGui::MenuItemEx(const char* label, const char* icon, const char* shortcut
         if (g.LastItemData.StatusFlags & ImGuiItemStatusFlags_Visible)
         {
             RenderText(pos + ImVec2(offsets->OffsetLabel, 0.0f), label);
-            if (icon_w > 0.0f)
+            if (image_icon != NULL)
+            {
+                const ImVec2 icon_min = pos + ImVec2(offsets->OffsetIcon, 0.0f);
+                const ImVec2 icon_max = icon_min + ImVec2(g.FontSize, g.FontSize);
+                // Untinted: window icons are colored artwork, not glyphs. GetColorU32() still
+                // folds in style.Alpha, so disabled/fading menus dim the icon with the label.
+                window->DrawList->AddImage(image_icon->TexId, icon_min, icon_max, image_icon->Uv0, image_icon->Uv1, GetColorU32(ImVec4(1.0f, 1.0f, 1.0f, 1.0f)));
+            }
+            else if (icon_w > 0.0f)
                 RenderText(pos + ImVec2(offsets->OffsetIcon, 0.0f), icon);
             if (shortcut_w > 0.0f)
             {
@@ -10921,6 +10955,10 @@ ImVec2 ImGui::TabItemCalcSize(const char* label, bool has_close_button_or_unsave
 {
     ImGuiContext& g = *GImGui;
     ImVec2 label_size = CalcTextSize(label, NULL, true);
+    // Modularity: a registered image icon claims a font-height square in front of the label.
+    // Kept in sync with the inset TabItemLabelAndCloseButton() applies, both keyed off the label.
+    if (FindNamedIcon(label) != NULL)
+        label_size.x += g.FontSize + g.Style.ItemInnerSpacing.x;
     ImVec2 size = ImVec2(label_size.x + g.Style.FramePadding.x, label_size.y + g.Style.FramePadding.y * 2.0f);
     if (has_close_button_or_unsaved_marker)
         size.x += g.Style.FramePadding.x + (g.Style.ItemInnerSpacing.x + g.FontSize); // We use Y intentionally to fit the close button circle.
@@ -10984,6 +11022,21 @@ void ImGui::TabItemLabelAndCloseButton(ImDrawList* draw_list, const ImRect& bb, 
 
     // Render text label (with clipping + alpha gradient) + unsaved marker
     ImRect text_ellipsis_clip_bb(bb.Min.x + frame_padding.x, bb.Min.y + frame_padding.y, bb.Max.x - frame_padding.x, bb.Max.y);
+
+    // Modularity: image icon in front of the label. TabItemCalcSize() already reserved the
+    // room, so this only has to inset the text and draw. Skipped once the tab is squeezed
+    // down to nothing but the icon, where the label would have no space left at all.
+    const ImGuiNamedIcon* tab_icon = FindNamedIcon(label);
+    if (tab_icon != NULL)
+    {
+        const float icon_sz = ImMin(g.FontSize, ImMax(0.0f, text_ellipsis_clip_bb.GetWidth()));
+        if (icon_sz > 1.0f)
+        {
+            const ImVec2 icon_min(text_ellipsis_clip_bb.Min.x, bb.Min.y + (bb.GetHeight() - icon_sz) * 0.5f);
+            draw_list->AddImage(tab_icon->TexId, icon_min, icon_min + ImVec2(icon_sz, icon_sz), tab_icon->Uv0, tab_icon->Uv1, GetColorU32(ImVec4(1.0f, 1.0f, 1.0f, is_contents_visible ? 1.0f : 0.72f)));
+            text_ellipsis_clip_bb.Min.x = ImMin(text_ellipsis_clip_bb.Min.x + icon_sz + g.Style.ItemInnerSpacing.x, text_ellipsis_clip_bb.Max.x);
+        }
+    }
 
     // Return clipped state ignoring the close button
     if (out_text_clipped)

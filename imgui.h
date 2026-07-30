@@ -4296,6 +4296,29 @@ namespace ImGui
 }
 
 //-----------------------------------------------------------------------------
+// [SECTION] Modularity: named image icons
+//-----------------------------------------------------------------------------
+// A tiny name -> texture registry so dock tabs and menu items can carry a real image
+// instead of a font glyph. The lookup key is hashed exactly like a widget id, so "###"
+// works the way it does everywhere else: registering "###Inspector" matches a window
+// titled "Inspektor###Inspector" and a menu item using that same label, which is what
+// keeps one registration valid across every editor language.
+// Registering the same name again overwrites; passing tex_id = 0 removes the entry.
+// Tab items and menu items pick their icon up on their own, no call-site changes needed.
+//-----------------------------------------------------------------------------
+
+namespace ImGui
+{
+    IMGUI_API void  SetNamedIcon(const char* name, ImTextureID tex_id, const ImVec2& uv0 = ImVec2(0, 0), const ImVec2& uv1 = ImVec2(1, 1));
+    IMGUI_API void  ClearNamedIcons();
+
+    // Modularity: pair of icons that ride the knob of the next Checkbox() drawn as a pill
+    // switch (style.CheckboxSwitch). They cross-fade off -> on with the knob and are ignored
+    // when the checkbox is drawn in classic square mode.
+    IMGUI_API void  SetNextItemCheckboxIcons(ImTextureID icon_off, ImTextureID icon_on, const ImVec2& uv0 = ImVec2(0, 0), const ImVec2& uv1 = ImVec2(1, 1));
+}
+
+//-----------------------------------------------------------------------------
 // [SECTION] Obsolete functions and types
 // (Will be removed! Read 'API BREAKING CHANGES' section in imgui.cpp for details)
 // Please keep your copy of dear imgui up to date! Occasionally set '#define IMGUI_DISABLE_OBSOLETE_FUNCTIONS' in imconfig.h to stay ahead.

@@ -169,6 +169,7 @@ struct ImGuiMultiSelectTempData;    // Multi-selection temporary state (while tr
 struct ImGuiNavItemData;            // Result of a keyboard/gamepad directional navigation move query result
 struct ImGuiMetricsConfig;          // Storage for ShowMetricsWindow() and DebugNodeXXX() functions
 struct ImGuiNextWindowData;         // Storage for SetNextWindow** functions
+struct ImGuiNamedIcon;              // Modularity: one entry of the named image icon registry
 struct ImGuiNextItemData;           // Storage for SetNextItem** functions
 struct ImGuiOldColumnData;          // Storage data for a single column for legacy Columns() api
 struct ImGuiOldColumns;             // Storage data for a columns set for legacy Columns() api
@@ -1361,6 +1362,7 @@ enum ImGuiNextItemDataFlags_
     ImGuiNextItemDataFlags_HasShortcut  = 1 << 2,
     ImGuiNextItemDataFlags_HasRefVal    = 1 << 3,
     ImGuiNextItemDataFlags_HasStorageID = 1 << 4,
+    ImGuiNextItemDataFlags_HasCheckboxIcons = 1 << 5,   // Modularity: SetNextItemCheckboxIcons()
 };
 
 struct ImGuiNextItemData
@@ -1378,6 +1380,10 @@ struct ImGuiNextItemData
     ImU8                        OpenCond;           // Set by SetNextItemOpen()
     ImGuiDataTypeStorage        RefVal;             // Not exposed yet, for ImGuiInputTextFlags_ParseEmptyAsRefVal
     ImGuiID                     StorageId;          // Set by SetNextItemStorageID()
+    ImTextureID                 CheckboxIconOff;    // Modularity: set by SetNextItemCheckboxIcons()
+    ImTextureID                 CheckboxIconOn;     // Modularity: set by SetNextItemCheckboxIcons()
+    ImVec2                      CheckboxIconUv0;    // Modularity: set by SetNextItemCheckboxIcons()
+    ImVec2                      CheckboxIconUv1;    // Modularity: set by SetNextItemCheckboxIcons()
 
     ImGuiNextItemData()         { memset(this, 0, sizeof(*this)); SelectionUserData = -1; }
     inline void ClearFlags()    { HasFlags = ImGuiNextItemDataFlags_None; ItemFlags = ImGuiItemFlags_None; } // Also cleared manually by ItemAdd()!
@@ -2362,6 +2368,18 @@ struct ImGuiContextHook
     ImGuiContextHook()          { memset(this, 0, sizeof(*this)); }
 };
 
+// Modularity: one entry of the named image icon registry (see ImGui::SetNamedIcon in imgui.h).
+// Key is ImHashStr() of the registered name, so it collapses "###" the same way widget ids do.
+struct ImGuiNamedIcon
+{
+    ImGuiID                     Key;
+    ImTextureID                 TexId;
+    ImVec2                      Uv0;
+    ImVec2                      Uv1;
+
+    ImGuiNamedIcon()            { Key = 0; TexId = 0; Uv0 = ImVec2(0.0f, 0.0f); Uv1 = ImVec2(1.0f, 1.0f); }
+};
+
 //-----------------------------------------------------------------------------
 // [SECTION] ImGuiContext (main Dear ImGui context)
 //-----------------------------------------------------------------------------
@@ -2399,6 +2417,9 @@ struct ImGuiContext
     ImDrawCallback          GlassBlurCallback;                  // App-provided "capture + blur the framebuffer now" callback, ran mid render
     void*                   GlassBlurCallbackUserData;          // Passed through to the callback untouched
     ImTextureID             GlassBlurTexture;                   // Where the callback deposits the blurred frame. 0 = glass fully disabled
+
+    // Modularity: named image icons for tab items and menu items (see ImGui::SetNamedIcon in imgui.h)
+    ImVector<ImGuiNamedIcon> NamedIcons;                        // Small and rarely written, so a flat vector beats a map here
 
     // Inputs
     ImVector<ImGuiInputEvent> InputEventsQueue;                 // Input events which will be trickled/written into IO structure.
@@ -3873,6 +3894,9 @@ namespace ImGui
     IMGUI_API ImVec2        TabItemCalcSize(ImGuiWindow* window);
     IMGUI_API void          TabItemBackground(ImDrawList* draw_list, const ImRect& bb, ImGuiTabItemFlags flags, ImU32 col);
     IMGUI_API void          TabItemLabelAndCloseButton(ImDrawList* draw_list, const ImRect& bb, ImGuiTabItemFlags flags, ImVec2 frame_padding, const char* label, ImGuiID tab_id, ImGuiID close_button_id, bool is_contents_visible, bool* out_just_closed, bool* out_text_clipped);
+
+    // Modularity: named image icons (see ImGui::SetNamedIcon in imgui.h)
+    IMGUI_API const ImGuiNamedIcon* FindNamedIcon(const char* name);
 
     // Render helpers
     // AVOID USING OUTSIDE OF IMGUI.CPP! NOT FOR PUBLIC CONSUMPTION. THOSE FUNCTIONS ARE A MESS. THEIR SIGNATURE AND BEHAVIOR WILL CHANGE, THEY NEED TO BE REFACTORED INTO SOMETHING DECENT.

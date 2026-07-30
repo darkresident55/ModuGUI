@@ -7440,6 +7440,54 @@ void ImGui::SetGlassBlurRenderer(ImDrawCallback capture_callback, void* callback
     g.GlassBlurTexture = blur_texture;
 }
 
+// Modularity: named image icon registry. See the big comment in imgui.h.
+void ImGui::SetNamedIcon(const char* name, ImTextureID tex_id, const ImVec2& uv0, const ImVec2& uv1)
+{
+    ImGuiContext& g = *GImGui;
+    if (name == NULL || name[0] == 0)
+        return;
+    const ImGuiID key = ImHashStr(name);
+    for (int n = 0; n < g.NamedIcons.Size; n++)
+        if (g.NamedIcons[n].Key == key)
+        {
+            if (tex_id == 0)
+                g.NamedIcons.erase(&g.NamedIcons[n]);
+            else
+            {
+                g.NamedIcons[n].TexId = tex_id;
+                g.NamedIcons[n].Uv0 = uv0;
+                g.NamedIcons[n].Uv1 = uv1;
+            }
+            return;
+        }
+    if (tex_id == 0)
+        return;
+    ImGuiNamedIcon entry;
+    entry.Key = key;
+    entry.TexId = tex_id;
+    entry.Uv0 = uv0;
+    entry.Uv1 = uv1;
+    g.NamedIcons.push_back(entry);
+}
+
+void ImGui::ClearNamedIcons()
+{
+    ImGuiContext& g = *GImGui;
+    g.NamedIcons.clear();
+}
+
+const ImGuiNamedIcon* ImGui::FindNamedIcon(const char* name)
+{
+    ImGuiContext& g = *GImGui;
+    if (g.NamedIcons.Size == 0 || name == NULL || name[0] == 0)
+        return NULL;
+    const ImGuiID key = ImHashStr(name);
+    for (int n = 0; n < g.NamedIcons.Size; n++)
+        if (g.NamedIcons[n].Key == key)
+            return &g.NamedIcons[n];
+    return NULL;
+}
+
 // Draw background and borders
 // Draw and handle scrollbars
 void ImGui::RenderWindowDecorations(ImGuiWindow* window, const ImRect& title_bar_rect, bool title_bar_is_highlight, bool handle_borders_and_resize_grips, int resize_grip_count, const ImU32 resize_grip_col[4], float resize_grip_draw_size)
@@ -12464,6 +12512,17 @@ void ImGui::SetNextItemWidth(float item_width)
     ImGuiContext& g = *GImGui;
     g.NextItemData.HasFlags |= ImGuiNextItemDataFlags_HasWidth;
     g.NextItemData.Width = item_width;
+}
+
+// Modularity: knob icons for the next pill-switch Checkbox(). See imgui.h.
+void ImGui::SetNextItemCheckboxIcons(ImTextureID icon_off, ImTextureID icon_on, const ImVec2& uv0, const ImVec2& uv1)
+{
+    ImGuiContext& g = *GImGui;
+    g.NextItemData.HasFlags |= ImGuiNextItemDataFlags_HasCheckboxIcons;
+    g.NextItemData.CheckboxIconOff = icon_off;
+    g.NextItemData.CheckboxIconOn = icon_on;
+    g.NextItemData.CheckboxIconUv0 = uv0;
+    g.NextItemData.CheckboxIconUv1 = uv1;
 }
 
 // FIXME: Remove the == 0.0f behavior?
