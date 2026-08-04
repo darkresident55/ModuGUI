@@ -4319,6 +4319,146 @@ namespace ImGui
 }
 
 //-----------------------------------------------------------------------------
+// [SECTION] Modularity: widget shading
+//-----------------------------------------------------------------------------
+// Depth for flat rectangles: a vertical gradient over the fill, a bevel (1px highlight along
+// one edge + 1px shadow along the other) and optional per-edge borders. This is what turns a
+// flat ImGuiCol_Button into a slightly raised button and a flat ImGuiCol_FrameBg into a
+// recessed input field, without any of it being baked into a texture or hardcoded in a widget.
+//
+// The colors still come from ImGuiStyle::Colors as they always did. A shade theme only says
+// *how* a given rectangle is shaded on top of that fill, keyed by:
+//   - class: what the rectangle is (button, input frame, tab, selection row, ...)
+//   - state: normal / hovered / active / selected / focused / disabled
+// so a theme that defines nothing renders exactly like stock ImGui (Enabled = false by default).
+//
+// Entries inherit instead of being duplicated: an entry that is not marked _Set resolves to
+// (its class, Normal), which in turn resolves to (Generic, Normal). An entry that IS set may
+// still borrow individual groups from its parent with the _Inherit* flags, so "the pressed
+// button is the normal button with an inverted bevel" is three fields, not a whole entry.
+// Inheritance is flattened once in SetShadeTheme(), so drawing is a plain array lookup.
+//
+// Widgets inside ModuGUI classify themselves, so any window - including third-party ones and
+// ModuPak windows - picks the active theme up from plain ImGui::Button()/InputText()/... calls
+// with no code change. Code that draws its own chrome can call ShadeRect() to match.
+//-----------------------------------------------------------------------------
+
+// What a rectangle is, visually. Picks the row of the shade theme to draw it with.
+enum ImGuiShadeClass_
+{
+    ImGuiShadeClass_Generic = 0,    // Anything not explicitly classified, incl. RenderFrame() from app code. Root of the inheritance chain.
+    ImGuiShadeClass_Window,         // Window body background
+    ImGuiShadeClass_Child,          // Child window / panel interior
+    ImGuiShadeClass_Popup,          // Popups, context menus, tooltips
+    ImGuiShadeClass_TitleBar,       // Window and dock node title bars
+    ImGuiShadeClass_MenuBar,        // Menu bars and toolbars
+    ImGuiShadeClass_Button,         // Push buttons (raised)
+    ImGuiShadeClass_Frame,          // Input frames: text, drag, slider, combo, checkbox (recessed)
+    ImGuiShadeClass_Header,         // Selection rows: Selectable, TreeNode, MenuItem, CollapsingHeader
+    ImGuiShadeClass_Tab,            // Tab bar / dock tab, unselected
+    ImGuiShadeClass_TabActive,      // Tab bar / dock tab, selected
+    ImGuiShadeClass_Grab,           // Slider grab, scrollbar grab (raised)
+    ImGuiShadeClass_ScrollbarBg,    // Scrollbar track (recessed)
+    ImGuiShadeClass_TableHeader,    // Table header cells
+    ImGuiShadeClass_Separator,      // Separators, splitters, panel borders
+    ImGuiShadeClass_COUNT
+};
+
+// Interaction state of the rectangle. The fill color already differs per state (ImGuiCol_Button
+// vs ImGuiCol_ButtonHovered); this only selects how that fill is shaded.
+enum ImGuiShadeState_
+{
+    ImGuiShadeState_Normal = 0,
+    ImGuiShadeState_Hovered,
+    ImGuiShadeState_Active,         // Held / pressed
+    ImGuiShadeState_Selected,       // Selected row, current tab
+    ImGuiShadeState_Focused,        // Keyboard focus, focused window or dock node
+    ImGuiShadeState_Disabled,
+    ImGuiShadeState_COUNT
+};
+
+enum ImGuiShadeFlags_
+{
+    ImGuiShadeFlags_None            = 0,
+    ImGuiShadeFlags_Set             = 1 << 0,   // Entry is authored. When clear the whole entry resolves to its parent.
+    ImGuiShadeFlags_Recessed        = 1 << 1,   // Sunken control: derived bevel is dark on top, light at the bottom (default is the opposite, i.e. raised)
+    ImGuiShadeFlags_NoGradient      = 1 << 2,   // Flat fill even if the parent has a gradient
+    ImGuiShadeFlags_NoBevel         = 1 << 3,   // No highlight/shadow edges even if the parent has them
+    ImGuiShadeFlags_InheritGradient = 1 << 4,   // Take GradientTop/GradientBottom from the parent entry
+    ImGuiShadeFlags_InheritBevel    = 1 << 5,   // Take BevelSize/BevelIntensity and the 4 bevel colors from the parent entry
+    ImGuiShadeFlags_InheritBorder   = 1 << 6,   // Take BorderSize and the 4 border colors from the parent entry
+};
+
+typedef int ImGuiShadeClass;        // -> enum ImGuiShadeClass_
+typedef int ImGuiShadeState;        // -> enum ImGuiShadeState_
+typedef int ImGuiShadeFlags;        // -> enum ImGuiShadeFlags_
+
+// How one (class, state) pair is shaded. POD, safe to memcpy/serialize.
+// Every ImU32 color field uses 0 as "not set": derive it from the fill color instead.
+// If you really want a fully transparent edge, use IM_COL32(0,0,0,1) or clear the matching flag.
+struct ImGuiShadeParams
+{
+    ImGuiShadeFlags Flags;          // See ImGuiShadeFlags_
+    float   GradientTop;            // Luminance added to the fill at the top edge, -1.0f..+1.0f. 0 = flat.
+    float   GradientBottom;         // Luminance added to the fill at the bottom edge.
+    float   BevelSize;              // Thickness of the highlight/shadow edges, in unscaled pixels. 0 = no bevel.
+    float   BevelIntensity;         // 0..1 opacity scale for bevel colors that are derived rather than set.
+    float   BorderSize;             // Thickness of the outline, in unscaled pixels. < 0 = use the matching ImGuiStyle border size.
+    ImU32   ColTopHighlight;        // Line just inside the top edge. 0 = derive (light when raised, dark when recessed).
+    ImU32   ColBottomShadow;        // Line just inside the bottom edge. 0 = derive.
+    ImU32   ColInnerShadow;         // Optional second line below the top edge. Only drawn when set.
+    ImU32   ColInnerHighlight;      // Optional second line above the bottom edge. Only drawn when set.
+    ImU32   ColBorderTop;           // Per-edge outline colors. 0 = fall back to ColBorderAll, then ImGuiCol_Border.
+    ImU32   ColBorderBottom;
+    ImU32   ColBorderLeft;
+    ImU32   ColBorderRight;
+    ImU32   ColBorderAll;           // Outline color used for edges that have no per-edge color. 0 = ImGuiCol_Border.
+
+    IMGUI_API ImGuiShadeParams();
+};
+
+// A full theme: one ImGuiShadeParams per (class, state), plus global scaling knobs.
+// POD apart from the constructor, so themes can be copied, diffed and stored by value.
+struct ImGuiShadeTheme
+{
+    bool    Enabled;                // Master switch. false = classic flat ModuGUI rendering, no extra draw work at all.
+    float   GradientScale;          // Multiplies every GradientTop/GradientBottom. 1.0f = as authored, 0.0f = flat.
+    float   BevelScale;             // Multiplies every BevelIntensity. 1.0f = as authored, 0.0f = no bevels.
+    float   Scale;                  // DPI scale for BevelSize/BorderSize. Thicknesses stay snapped to whole pixels.
+    ImGuiShadeParams Params[ImGuiShadeClass_COUNT][ImGuiShadeState_COUNT];
+
+    IMGUI_API ImGuiShadeTheme();
+};
+
+namespace ImGui
+{
+    // Active theme. SetShadeTheme() flattens inheritance into a lookup table, so call it when the
+    // theme changes (preset switch, hot-reload), not per frame.
+    IMGUI_API const ImGuiShadeTheme& GetShadeTheme();
+    IMGUI_API void                   SetShadeTheme(const ImGuiShadeTheme& theme);
+    IMGUI_API const ImGuiShadeParams& GetShadeParams(ImGuiShadeClass shade_class, ImGuiShadeState shade_state); // Already resolved: no inheritance walk, no allocation.
+
+    // Built-in themes.
+    IMGUI_API void  StyleShadeThemeFlat(ImGuiShadeTheme* dst);       // Everything off. Matches pre-shading ModuGUI exactly.
+    IMGUI_API void  StyleShadeThemeDesktop(ImGuiShadeTheme* dst);    // Restrained desktop-editor depth: raised buttons/tabs, recessed frames and panels.
+
+    // Draw a shaded rectangle. Same result as ImDrawList::AddRectFilled() when shading is off.
+    // Allocation free; safe to call from any window, including third-party ones.
+    IMGUI_API void  ShadeRect(ImDrawList* draw_list, const ImVec2& p_min, const ImVec2& p_max, ImU32 fill_col, ImGuiShadeClass shade_class, ImGuiShadeState shade_state = ImGuiShadeState_Normal, float rounding = 0.0f, ImDrawFlags draw_flags = 0);
+    IMGUI_API void  ShadeRectEx(ImDrawList* draw_list, const ImVec2& p_min, const ImVec2& p_max, ImU32 fill_col, const ImGuiShadeParams& params, float rounding = 0.0f, ImDrawFlags draw_flags = 0);
+
+    // Stable identifiers for serialization and for theme editors. Never localized, never renamed.
+    IMGUI_API const char* GetShadeClassName(ImGuiShadeClass shade_class);
+    IMGUI_API const char* GetShadeStateName(ImGuiShadeState shade_state);
+    IMGUI_API ImGuiShadeClass FindShadeClassByName(const char* name);   // -1 when unknown
+    IMGUI_API ImGuiShadeState FindShadeStateByName(const char* name);   // -1 when unknown
+
+    // Helpers for classifying a rectangle the way the built-in widgets do.
+    IMGUI_API ImGuiShadeState ShadeStateFromInteraction(bool hovered, bool held, bool selected = false); // Also reports Disabled inside BeginDisabled().
+    IMGUI_API ImU32 ShadeAdjustColor(ImU32 col, float luminance_delta);                                  // Lighten (+) or darken (-) keeping alpha. Used to derive gradients.
+}
+
+//-----------------------------------------------------------------------------
 // [SECTION] Obsolete functions and types
 // (Will be removed! Read 'API BREAKING CHANGES' section in imgui.cpp for details)
 // Please keep your copy of dear imgui up to date! Occasionally set '#define IMGUI_DISABLE_OBSOLETE_FUNCTIONS' in imconfig.h to stay ahead.

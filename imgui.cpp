@@ -3992,17 +3992,11 @@ void ImGui::RenderTextEllipsis(ImDrawList* draw_list, const ImVec2& pos_min, con
 }
 
 // Render a rectangle shaped with optional rounding and borders
+// Modularity: routed through the shading layer as _Generic, which is flat unless a theme says
+// otherwise. Widgets that know what they are drawing call RenderFrameShaded() with their class.
 void ImGui::RenderFrame(ImVec2 p_min, ImVec2 p_max, ImU32 fill_col, bool borders, float rounding)
 {
-    ImGuiContext& g = *GImGui;
-    ImGuiWindow* window = g.CurrentWindow;
-    window->DrawList->AddRectFilled(p_min, p_max, fill_col, rounding);
-    const float border_size = g.Style.FrameBorderSize;
-    if (borders && border_size > 0.0f)
-    {
-        window->DrawList->AddRect(p_min + ImVec2(1, 1), p_max + ImVec2(1, 1), GetColorU32(ImGuiCol_BorderShadow), rounding, 0, border_size);
-        window->DrawList->AddRect(p_min, p_max, GetColorU32(ImGuiCol_Border), rounding, 0, border_size);
-    }
+    RenderFrameShaded(p_min, p_max, fill_col, borders, rounding, ImGuiShadeClass_Generic, ImGuiShadeState_Normal);
 }
 
 void ImGui::RenderFrameBorder(ImVec2 p_min, ImVec2 p_max, float rounding)
@@ -4188,6 +4182,11 @@ ImGuiContext::ImGuiContext(ImFontAtlas* shared_font_atlas)
     GlassBlurCallback = NULL;
     GlassBlurCallbackUserData = NULL;
     GlassBlurTexture = 0;
+
+    // Modularity: widget shading starts disabled (ImGuiShadeTheme's own default), so a context
+    // that never calls SetShadeTheme() draws exactly like stock ImGui. Resolve it anyway so the
+    // lookup table is valid from the very first widget.
+    ImGui::ShadeResolveTheme(ShadeTheme, ShadeResolved);
 
     InputEventsNextMouseSource = ImGuiMouseSource_Mouse;
     InputEventsNextEventId = 1;
@@ -7513,7 +7512,7 @@ void ImGui::RenderWindowDecorations(ImGuiWindow* window, const ImRect& title_bar
         ImU32 title_bar_col = GetColorU32((title_bar_is_highlight && g.NavCursorVisible) ? ImGuiCol_TitleBgActive : ImGuiCol_TitleBgCollapsed);
         if (window->ViewportOwned)
             title_bar_col |= IM_COL32_A_MASK; // No alpha (we don't support is_docking_transparent_payload here because simpler and less meaningful, but could with a bit of code shuffle/reuse)
-        RenderFrame(title_bar_rect.Min, title_bar_rect.Max, title_bar_col, true, window_rounding);
+        RenderFrameShaded(title_bar_rect.Min, title_bar_rect.Max, title_bar_col, true, window_rounding, ImGuiShadeClass_TitleBar, title_bar_is_highlight ? ImGuiShadeState_Focused : ImGuiShadeState_Normal);
         g.Style.FrameBorderSize = backup_border_size;
     }
     else
@@ -7581,7 +7580,14 @@ void ImGui::RenderWindowDecorations(ImGuiWindow* window, const ImRect& title_bar
             ImDrawList* bg_draw_list = window->DockIsActive ? window->DockNode->HostWindow->DrawList : window->DrawList;
             if (window->DockIsActive || (flags & ImGuiWindowFlags_DockNodeHost))
                 bg_draw_list->ChannelsSetCurrent(DOCKING_HOST_DRAW_CHANNEL_BG);
-            bg_draw_list->AddRectFilled(window->Pos + ImVec2(0, window->TitleBarHeight), window->Pos + window->Size, bg_col, window_rounding, (flags & ImGuiWindowFlags_NoTitleBar) ? 0 : ImDrawFlags_RoundCornersBottom);
+            // Modularity: shade the body by what kind of surface it is. Child windows read as
+            // recessed panel interiors, popups/menus as raised sheets, everything else as a window.
+            const ImGuiShadeClass bg_shade_class = (flags & ImGuiWindowFlags_ChildWindow) ? ImGuiShadeClass_Child
+                : (flags & (ImGuiWindowFlags_Popup | ImGuiWindowFlags_Tooltip)) ? ImGuiShadeClass_Popup
+                : ImGuiShadeClass_Window;
+            ShadeRect(bg_draw_list, window->Pos + ImVec2(0, window->TitleBarHeight), window->Pos + window->Size, bg_col, bg_shade_class,
+                      title_bar_is_highlight ? ImGuiShadeState_Focused : ImGuiShadeState_Normal,
+                      window_rounding, (flags & ImGuiWindowFlags_NoTitleBar) ? 0 : ImDrawFlags_RoundCornersBottom);
             if (window->DockIsActive || (flags & ImGuiWindowFlags_DockNodeHost))
                 bg_draw_list->ChannelsSetCurrent(DOCKING_HOST_DRAW_CHANNEL_FG);
         }
@@ -7596,7 +7602,7 @@ void ImGui::RenderWindowDecorations(ImGuiWindow* window, const ImRect& title_bar
             ImU32 title_bar_col = GetColorU32(title_bar_is_highlight ? ImGuiCol_TitleBgActive : ImGuiCol_TitleBg);
             if (window->ViewportOwned)
                 title_bar_col |= IM_COL32_A_MASK; // No alpha
-            window->DrawList->AddRectFilled(title_bar_rect.Min, title_bar_rect.Max, title_bar_col, window_rounding, ImDrawFlags_RoundCornersTop);
+            ShadeRect(window->DrawList, title_bar_rect.Min, title_bar_rect.Max, title_bar_col, ImGuiShadeClass_TitleBar, title_bar_is_highlight ? ImGuiShadeState_Focused : ImGuiShadeState_Normal, window_rounding, ImDrawFlags_RoundCornersTop);
         }
 
         // Menu bar
@@ -7604,7 +7610,7 @@ void ImGui::RenderWindowDecorations(ImGuiWindow* window, const ImRect& title_bar
         {
             ImRect menu_bar_rect = window->MenuBarRect();
             menu_bar_rect.ClipWith(window->Rect());  // Soft clipping, in particular child window don't have minimum size covering the menu bar so this is useful for them.
-            window->DrawList->AddRectFilled(menu_bar_rect.Min, menu_bar_rect.Max, GetColorU32(ImGuiCol_MenuBarBg), (flags & ImGuiWindowFlags_NoTitleBar) ? window_rounding : 0.0f, ImDrawFlags_RoundCornersTop);
+            ShadeRect(window->DrawList, menu_bar_rect.Min, menu_bar_rect.Max, GetColorU32(ImGuiCol_MenuBarBg), ImGuiShadeClass_MenuBar, ImGuiShadeState_Normal, (flags & ImGuiWindowFlags_NoTitleBar) ? window_rounding : 0.0f, ImDrawFlags_RoundCornersTop);
             if (style.FrameBorderSize > 0.0f && menu_bar_rect.Max.y < window->Pos.y + window->Size.y)
                 window->DrawList->AddLine(menu_bar_rect.GetBL() + ImVec2(window_border_size * 0.5f, 0.0f), menu_bar_rect.GetBR() - ImVec2(window_border_size * 0.5f, 0.0f), GetColorU32(ImGuiCol_Border), style.FrameBorderSize);
         }
@@ -18383,7 +18389,9 @@ void ImGui::DockContextEndFrame(ImGuiContext* ctx)
                 ImRect bg_rect(node->Pos + ImVec2(0.0f, GetFrameHeight()), node->Pos + node->Size);
                 ImDrawFlags bg_rounding_flags = CalcRoundingFlagsForRectInRect(bg_rect, node->HostWindow->Rect(), g.Style.DockingSeparatorSize);
                 node->HostWindow->DrawList->ChannelsSetCurrent(DOCKING_HOST_DRAW_CHANNEL_BG);
-                node->HostWindow->DrawList->AddRectFilled(bg_rect.Min, bg_rect.Max, node->LastBgColor, node->HostWindow->WindowRounding, bg_rounding_flags);
+                // Modularity: same shading as a real window body, so a node whose window is gone
+                // for a frame does not flash a flat rectangle among gradient-filled neighbours.
+                ShadeRect(node->HostWindow->DrawList, bg_rect.Min, bg_rect.Max, node->LastBgColor, ImGuiShadeClass_Window, ImGuiShadeState_Normal, node->HostWindow->WindowRounding, bg_rounding_flags);
             }
 }
 
@@ -19982,7 +19990,9 @@ static void ImGui::DockNodeUpdateTabBar(ImGuiDockNode* node, ImGuiWindow* host_w
         node->LastFrameFocused = g.FrameCount;
     ImU32 title_bar_col = GetColorU32(host_window->Collapsed ? ImGuiCol_TitleBgCollapsed : is_focused ? ImGuiCol_TitleBgActive : ImGuiCol_TitleBg);
     ImDrawFlags rounding_flags = CalcRoundingFlagsForRectInRect(title_bar_rect, host_window->Rect(), g.Style.DockingSeparatorSize);
-    host_window->DrawList->AddRectFilled(title_bar_rect.Min, title_bar_rect.Max, title_bar_col, host_window->WindowRounding, rounding_flags);
+    // Modularity: the dock node's tab strip is chrome, not a window body. Shade it like a title bar
+    // so a focused node reads as raised against the docking area around it.
+    ShadeRect(host_window->DrawList, title_bar_rect.Min, title_bar_rect.Max, title_bar_col, ImGuiShadeClass_TitleBar, is_focused ? ImGuiShadeState_Focused : ImGuiShadeState_Normal, host_window->WindowRounding, rounding_flags);
 
     // Docking/Collapse button
     if (has_window_menu_button)

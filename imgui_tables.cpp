@@ -2022,7 +2022,14 @@ void ImGui::TableEndRow(ImGuiTable* table)
             ImRect row_rect(table->WorkRect.Min.x, bg_y1, table->WorkRect.Max.x, bg_y2);
             row_rect.ClipWith(table->BgClipRect);
             if (bg_col0 != 0 && row_rect.Min.y < row_rect.Max.y)
-                window->DrawList->AddRectFilled(row_rect.Min, row_rect.Max, bg_col0);
+            {
+                // Modularity: header rows are chrome and get the theme's table-header shading;
+                // ordinary striped rows stay flat, shading them would fight with the stripes.
+                if (table->RowFlags & ImGuiTableRowFlags_Headers)
+                    ShadeRect(window->DrawList, row_rect.Min, row_rect.Max, bg_col0, ImGuiShadeClass_TableHeader);
+                else
+                    window->DrawList->AddRectFilled(row_rect.Min, row_rect.Max, bg_col0);
+            }
             if (bg_col1 != 0 && row_rect.Min.y < row_rect.Max.y)
                 window->DrawList->AddRectFilled(row_rect.Min, row_rect.Max, bg_col1);
         }

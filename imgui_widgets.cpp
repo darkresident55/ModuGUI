@@ -827,7 +827,7 @@ bool ImGui::ButtonEx(const char* label, const ImVec2& size_arg, ImGuiButtonFlags
     // Render
     const ImU32 col = GetColorU32((held && hovered) ? ImGuiCol_ButtonActive : hovered ? ImGuiCol_ButtonHovered : ImGuiCol_Button);
     RenderNavCursor(bb, id);
-    RenderFrame(bb.Min, bb.Max, col, true, style.FrameRounding);
+    RenderFrameShaded(bb.Min, bb.Max, col, true, style.FrameRounding, ImGuiShadeClass_Button, ShadeStateFromInteraction(hovered, held && hovered));
 
     if (g.LogEnabled)
         LogSetNextTextDecoration("[", "]");
@@ -905,7 +905,7 @@ bool ImGui::ArrowButtonEx(const char* str_id, ImGuiDir dir, ImVec2 size, ImGuiBu
     const ImU32 bg_col = GetColorU32((held && hovered) ? ImGuiCol_ButtonActive : hovered ? ImGuiCol_ButtonHovered : ImGuiCol_Button);
     const ImU32 text_col = GetColorU32(ImGuiCol_Text);
     RenderNavCursor(bb, id);
-    RenderFrame(bb.Min, bb.Max, bg_col, true, g.Style.FrameRounding);
+    RenderFrameShaded(bb.Min, bb.Max, bg_col, true, g.Style.FrameRounding, ImGuiShadeClass_Button, ShadeStateFromInteraction(hovered, held && hovered));
     RenderArrow(window->DrawList, bb.Min + ImVec2(ImMax(0.0f, (size.x - g.FontSize) * 0.5f), ImMax(0.0f, (size.y - g.FontSize) * 0.5f)), text_col, dir);
 
     IMGUI_TEST_ENGINE_ITEM_INFO(id, str_id, g.LastItemData.StatusFlags);
@@ -1138,13 +1138,13 @@ bool ImGui::ScrollbarEx(const ImRect& bb_frame, ImGuiID id, ImGuiAxis axis, ImS6
     // Render
     const ImU32 bg_col = GetColorU32(ImGuiCol_ScrollbarBg);
     const ImU32 grab_col = GetColorU32(held ? ImGuiCol_ScrollbarGrabActive : hovered ? ImGuiCol_ScrollbarGrabHovered : ImGuiCol_ScrollbarGrab, alpha);
-    window->DrawList->AddRectFilled(bb_frame.Min, bb_frame.Max, bg_col, window->WindowRounding, draw_rounding_flags);
+    ShadeRect(window->DrawList, bb_frame.Min, bb_frame.Max, bg_col, ImGuiShadeClass_ScrollbarBg, ImGuiShadeState_Normal, window->WindowRounding, draw_rounding_flags);
     ImRect grab_rect;
     if (axis == ImGuiAxis_X)
         grab_rect = ImRect(ImLerp(bb.Min.x, bb.Max.x, grab_v_norm), bb.Min.y, ImLerp(bb.Min.x, bb.Max.x, grab_v_norm) + grab_h_pixels, bb.Max.y);
     else
         grab_rect = ImRect(bb.Min.x, ImLerp(bb.Min.y, bb.Max.y, grab_v_norm), bb.Max.x, ImLerp(bb.Min.y, bb.Max.y, grab_v_norm) + grab_h_pixels);
-    window->DrawList->AddRectFilled(grab_rect.Min, grab_rect.Max, grab_col, style.ScrollbarRounding);
+    ShadeRect(window->DrawList, grab_rect.Min, grab_rect.Max, grab_col, ImGuiShadeClass_Grab, ShadeStateFromInteraction(hovered, held), style.ScrollbarRounding);
 
     return held;
 }
@@ -1209,7 +1209,7 @@ bool ImGui::ImageButtonEx(ImGuiID id, ImTextureRef tex_ref, const ImVec2& image_
     // Render
     const ImU32 col = GetColorU32((held && hovered) ? ImGuiCol_ButtonActive : hovered ? ImGuiCol_ButtonHovered : ImGuiCol_Button);
     RenderNavCursor(bb, id);
-    RenderFrame(bb.Min, bb.Max, col, true, ImClamp((float)ImMin(padding.x, padding.y), 0.0f, g.Style.FrameRounding));
+    RenderFrameShaded(bb.Min, bb.Max, col, true, ImClamp((float)ImMin(padding.x, padding.y), 0.0f, g.Style.FrameRounding), ImGuiShadeClass_Button, ShadeStateFromInteraction(hovered, held && hovered));
     if (bg_col.w > 0.0f)
         window->DrawList->AddRectFilled(bb.Min + padding, bb.Max - padding, GetColorU32(bg_col));
     window->DrawList->AddImage(tex_ref, bb.Min + padding, bb.Max - padding, uv0, uv1, GetColorU32(tint_col));
@@ -1332,7 +1332,7 @@ bool ImGui::Checkbox(const char* label, bool* v)
             const ImRect track_bb = ScaleRectAroundCenter(check_bb, 1.0f + hover_t * 0.03f + held_t * 0.02f);
             const float track_r = track_bb.GetHeight() * 0.5f;
             ImVec4 track_col4 = ImLerp(GetStyleColorVec4(hovered ? ImGuiCol_FrameBgHovered : ImGuiCol_FrameBg), GetStyleColorVec4(ImGuiCol_CheckMark), mark_t);
-            window->DrawList->AddRectFilled(track_bb.Min, track_bb.Max, GetColorU32(track_col4), track_r);
+            ShadeRect(window->DrawList, track_bb.Min, track_bb.Max, GetColorU32(track_col4), ImGuiShadeClass_Frame, ShadeStateFromInteraction(hovered, held), track_r);
             if (style.FrameBorderSize > 0.0f)
                 window->DrawList->AddRect(track_bb.Min, track_bb.Max, GetColorU32(ImGuiCol_Border), track_r, 0, style.FrameBorderSize);
 
@@ -1363,9 +1363,9 @@ bool ImGui::Checkbox(const char* label, bool* v)
         }
         else
         {
-        RenderFrame(animated_check_bb.Min, animated_check_bb.Max,
+        RenderFrameShaded(animated_check_bb.Min, animated_check_bb.Max,
                     GetColorU32((held && hovered) ? ImGuiCol_FrameBgActive : hovered ? ImGuiCol_FrameBgHovered : ImGuiCol_FrameBg),
-                    true, style.FrameRounding * box_scale);
+                    true, style.FrameRounding * box_scale, ImGuiShadeClass_Frame, ShadeStateFromInteraction(hovered, held && hovered));
         ImU32 check_col = GetColorU32(ImGuiCol_CheckMark);
         if (mixed_value)
         {
@@ -1544,7 +1544,7 @@ void ImGui::ProgressBar(float fraction, const ImVec2& size_arg, const char* over
     }
 
     // Render
-    RenderFrame(bb.Min, bb.Max, GetColorU32(ImGuiCol_FrameBg), true, style.FrameRounding);
+    RenderFrameShaded(bb.Min, bb.Max, GetColorU32(ImGuiCol_FrameBg), true, style.FrameRounding, ImGuiShadeClass_Frame);
     bb.Expand(ImVec2(-style.FrameBorderSize, -style.FrameBorderSize));
     RenderRectFilledRangeH(window->DrawList, bb, GetColorU32(ImGuiCol_PlotHistogram), fill_n0, fill_n1, style.FrameRounding);
 
@@ -1749,7 +1749,7 @@ void ImGui::SeparatorEx(ImGuiSeparatorFlags flags, float thickness)
             return;
 
         // Draw
-        window->DrawList->AddRectFilled(bb.Min, bb.Max, GetColorU32(ImGuiCol_Separator));
+        ShadeRect(window->DrawList, bb.Min, bb.Max, GetColorU32(ImGuiCol_Separator), ImGuiShadeClass_Separator);
         if (g.LogEnabled)
             LogText(" |");
     }
@@ -1779,7 +1779,7 @@ void ImGui::SeparatorEx(ImGuiSeparatorFlags flags, float thickness)
         if (ItemAdd(bb, 0))
         {
             // Draw
-            window->DrawList->AddRectFilled(bb.Min, bb.Max, GetColorU32(ImGuiCol_Separator));
+            ShadeRect(window->DrawList, bb.Min, bb.Max, GetColorU32(ImGuiCol_Separator), ImGuiShadeClass_Separator);
             if (g.LogEnabled)
                 LogRenderedText(&bb.Min, "--------------------------------\n");
 
@@ -1929,7 +1929,9 @@ bool ImGui::SplitterBehavior(const ImRect& bb, ImGuiID id, ImGuiAxis axis, float
     if (bg_col & IM_COL32_A_MASK)
         window->DrawList->AddRectFilled(bb_render.Min, bb_render.Max, bg_col, 0.0f);
     const ImU32 col = GetColorU32(held ? ImGuiCol_SeparatorActive : (hovered && g.HoveredIdTimer >= hover_visibility_delay) ? ImGuiCol_SeparatorHovered : ImGuiCol_Separator);
-    window->DrawList->AddRectFilled(bb_render.Min, bb_render.Max, col, 0.0f);
+    // Modularity: docking splitters share the separator shading, which is what draws the thin
+    // seam between docked areas.
+    ShadeRect(window->DrawList, bb_render.Min, bb_render.Max, col, ImGuiShadeClass_Separator, ShadeStateFromInteraction(hovered, held), 0.0f);
 
     return held;
 }
@@ -2052,12 +2054,12 @@ bool ImGui::BeginCombo(const char* label, const char* preview_value, ImGuiComboF
     const float value_x2 = ImMax(bb.Min.x, bb.Max.x - arrow_size);
     RenderNavCursor(bb, id);
     if (!(flags & ImGuiComboFlags_NoPreview))
-        window->DrawList->AddRectFilled(bb.Min, ImVec2(value_x2, bb.Max.y), frame_col, style.FrameRounding, (flags & ImGuiComboFlags_NoArrowButton) ? ImDrawFlags_RoundCornersAll : ImDrawFlags_RoundCornersLeft);
+        ShadeRect(window->DrawList, bb.Min, ImVec2(value_x2, bb.Max.y), frame_col, ImGuiShadeClass_Frame, ShadeStateFromInteraction(hovered, false), style.FrameRounding, (flags & ImGuiComboFlags_NoArrowButton) ? ImDrawFlags_RoundCornersAll : ImDrawFlags_RoundCornersLeft);
     if (!(flags & ImGuiComboFlags_NoArrowButton))
     {
         ImU32 bg_col = GetColorU32((popup_open || hovered) ? ImGuiCol_ButtonHovered : ImGuiCol_Button);
         ImU32 text_col = GetColorU32(ImGuiCol_Text);
-        window->DrawList->AddRectFilled(ImVec2(value_x2, bb.Min.y), bb.Max, bg_col, style.FrameRounding, (w <= arrow_size) ? ImDrawFlags_RoundCornersAll : ImDrawFlags_RoundCornersRight);
+        ShadeRect(window->DrawList, ImVec2(value_x2, bb.Min.y), bb.Max, bg_col, ImGuiShadeClass_Button, ShadeStateFromInteraction(popup_open || hovered, popup_open), style.FrameRounding, (w <= arrow_size) ? ImDrawFlags_RoundCornersAll : ImDrawFlags_RoundCornersRight);
         if (value_x2 + arrow_size - style.FramePadding.x <= bb.Max.x)
             RenderArrow(window->DrawList, ImVec2(value_x2 + style.FramePadding.y, bb.Min.y + style.FramePadding.y), text_col, ImGuiDir_Down, 1.0f);
     }
@@ -2859,7 +2861,7 @@ bool ImGui::DragScalar(const char* label, ImGuiDataType data_type, void* p_data,
     // Draw frame
     const ImU32 frame_col = GetColorU32(g.ActiveId == id ? ImGuiCol_FrameBgActive : hovered ? ImGuiCol_FrameBgHovered : ImGuiCol_FrameBg);
     RenderNavCursor(frame_bb, id);
-    RenderFrame(frame_bb.Min, frame_bb.Max, frame_col, true, style.FrameRounding);
+    RenderFrameShaded(frame_bb.Min, frame_bb.Max, frame_col, true, style.FrameRounding, ImGuiShadeClass_Frame, ShadeStateFromInteraction(hovered, g.ActiveId == id));
 
     // Drag behavior
     const bool value_changed = DragBehavior(id, data_type, p_data, v_speed, p_min, p_max, format, flags);
@@ -3448,7 +3450,7 @@ bool ImGui::SliderScalar(const char* label, ImGuiDataType data_type, void* p_dat
     const ImU32 frame_col = GetColorU32(g.ActiveId == id ? ImGuiCol_FrameBgActive : hovered ? ImGuiCol_FrameBgHovered : ImGuiCol_FrameBg);
     RenderNavCursor(frame_bb, id);
     if (!style.SliderPill)
-        RenderFrame(frame_bb.Min, frame_bb.Max, frame_col, true, g.Style.FrameRounding);
+        RenderFrameShaded(frame_bb.Min, frame_bb.Max, frame_col, true, g.Style.FrameRounding, ImGuiShadeClass_Frame, ShadeStateFromInteraction(hovered, g.ActiveId == id));
 
     // Slider behavior
     ImRect grab_bb;
@@ -3484,7 +3486,7 @@ bool ImGui::SliderScalar(const char* label, ImGuiDataType data_type, void* p_dat
             const float inset = track_h * 0.5f + 1.0f;
             const ImRect track_bb(ImVec2(frame_bb.Min.x + inset, cy - track_h * 0.5f), ImVec2(frame_bb.Max.x - inset, cy + track_h * 0.5f));
             const float knob_cx = ImClamp((grab_bb.Min.x + grab_bb.Max.x) * 0.5f, track_bb.Min.x, track_bb.Max.x);
-            window->DrawList->AddRectFilled(track_bb.Min, track_bb.Max, frame_col, track_h * 0.5f);
+            ShadeRect(window->DrawList, track_bb.Min, track_bb.Max, frame_col, ImGuiShadeClass_Frame, ShadeStateFromInteraction(hovered, is_active), track_h * 0.5f);
             if (knob_cx > track_bb.Min.x + 1.0f)
                 window->DrawList->AddRectFilled(track_bb.Min, ImVec2(knob_cx, track_bb.Max.y), GetColorU32(ImGuiCol_SliderGrabActive), track_h * 0.5f);
             const float knob_r = ImMax(track_h, frame_bb.GetHeight() * 0.34f) * grab_scale;
@@ -3494,9 +3496,10 @@ bool ImGui::SliderScalar(const char* label, ImGuiDataType data_type, void* p_dat
         else
         {
         const ImRect animated_grab_bb = ScaleRectAroundCenter(grab_bb, grab_scale);
-        window->DrawList->AddRectFilled(animated_grab_bb.Min, animated_grab_bb.Max,
-                                        GetColorU32(is_active ? ImGuiCol_SliderGrabActive : ImGuiCol_SliderGrab),
-                                        style.GrabRounding * grab_scale);
+        ShadeRect(window->DrawList, animated_grab_bb.Min, animated_grab_bb.Max,
+                  GetColorU32(is_active ? ImGuiCol_SliderGrabActive : ImGuiCol_SliderGrab),
+                  ImGuiShadeClass_Grab, is_active ? ImGuiShadeState_Active : ImGuiShadeState_Normal,
+                  style.GrabRounding * grab_scale);
         }
     }
 
@@ -3638,7 +3641,7 @@ bool ImGui::VSliderScalar(const char* label, const ImVec2& size, ImGuiDataType d
     // Draw frame
     const ImU32 frame_col = GetColorU32(g.ActiveId == id ? ImGuiCol_FrameBgActive : hovered ? ImGuiCol_FrameBgHovered : ImGuiCol_FrameBg);
     RenderNavCursor(frame_bb, id);
-    RenderFrame(frame_bb.Min, frame_bb.Max, frame_col, true, g.Style.FrameRounding);
+    RenderFrameShaded(frame_bb.Min, frame_bb.Max, frame_col, true, g.Style.FrameRounding, ImGuiShadeClass_Frame, ShadeStateFromInteraction(hovered, g.ActiveId == id));
 
     // Slider behavior
     ImRect grab_bb;
@@ -3666,9 +3669,10 @@ bool ImGui::VSliderScalar(const char* label, const ImVec2& size, ImGuiDataType d
         const float release_bounce = sinf(release_phase * IM_PI) * ImSaturate(*release_anim);
         const float grab_scale = 1.0f + ImSaturate(*hover_anim) * 0.08f + ImSaturate(*active_anim) * 0.14f + release_bounce * 0.06f;
         const ImRect animated_grab_bb = ScaleRectAroundCenter(grab_bb, grab_scale);
-        window->DrawList->AddRectFilled(animated_grab_bb.Min, animated_grab_bb.Max,
-                                        GetColorU32(is_active ? ImGuiCol_SliderGrabActive : ImGuiCol_SliderGrab),
-                                        style.GrabRounding * grab_scale);
+        ShadeRect(window->DrawList, animated_grab_bb.Min, animated_grab_bb.Max,
+                  GetColorU32(is_active ? ImGuiCol_SliderGrabActive : ImGuiCol_SliderGrab),
+                  ImGuiShadeClass_Grab, is_active ? ImGuiShadeState_Active : ImGuiShadeState_Normal,
+                  style.GrabRounding * grab_scale);
     }
 
     // Display value using user-provided display format so user can add prefix/suffix/decorations to the value.
@@ -5538,7 +5542,7 @@ bool ImGui::InputTextEx(const char* label, const char* hint, char* buf, int buf_
     if (!is_multiline)
     {
         RenderNavCursor(frame_bb, id);
-        RenderFrame(frame_bb.Min, frame_bb.Max, GetColorU32(ImGuiCol_FrameBg), true, style.FrameRounding);
+        RenderFrameShaded(frame_bb.Min, frame_bb.Max, GetColorU32(ImGuiCol_FrameBg), true, style.FrameRounding, ImGuiShadeClass_Frame, ShadeStateFromInteraction(hovered, g.ActiveId == id));
     }
 
     ImVec2 draw_pos = is_multiline ? draw_window->DC.CursorPos : frame_bb.Min + style.FramePadding;
@@ -7173,7 +7177,7 @@ bool ImGui::TreeNodeBehavior(ImGuiID id, ImGuiTreeNodeFlags flags, const char* l
         {
             // Framed type
             const ImU32 bg_col = GetColorU32((held && hovered) ? ImGuiCol_HeaderActive : hovered ? ImGuiCol_HeaderHovered : ImGuiCol_Header);
-            RenderFrame(frame_bb.Min, frame_bb.Max, bg_col, true, style.FrameRounding);
+            RenderFrameShaded(frame_bb.Min, frame_bb.Max, bg_col, true, style.FrameRounding, ImGuiShadeClass_Header, ShadeStateFromInteraction(hovered, held && hovered, selected));
             RenderNavCursor(frame_bb, id, nav_render_cursor_flags);
             if (span_all_columns && !span_all_columns_label)
                 TablePopBackgroundChannel();
@@ -7194,7 +7198,7 @@ bool ImGui::TreeNodeBehavior(ImGuiID id, ImGuiTreeNodeFlags flags, const char* l
             if (hovered || selected)
             {
                 const ImU32 bg_col = GetColorU32((held && hovered) ? ImGuiCol_HeaderActive : hovered ? ImGuiCol_HeaderHovered : ImGuiCol_Header);
-                RenderFrame(frame_bb.Min, frame_bb.Max, bg_col, false);
+                RenderFrameShaded(frame_bb.Min, frame_bb.Max, bg_col, false, 0.0f, ImGuiShadeClass_Header, ShadeStateFromInteraction(hovered, held && hovered, selected));
             }
             RenderNavCursor(frame_bb, id, nav_render_cursor_flags);
             if (span_all_columns && !span_all_columns_label)
@@ -7575,7 +7579,7 @@ bool ImGui::Selectable(const char* label, bool selected, ImGuiSelectableFlags fl
         {
             // Between 1.91.0 and 1.91.4 we made selected Selectable use an arbitrary lerp between _Header and _HeaderHovered. Removed that now. (#8106)
             ImU32 col = GetColorU32((held && highlighted) ? ImGuiCol_HeaderActive : highlighted ? ImGuiCol_HeaderHovered : ImGuiCol_Header);
-            RenderFrame(bb.Min, bb.Max, col, false, 0.0f);
+            RenderFrameShaded(bb.Min, bb.Max, col, false, 0.0f, ImGuiShadeClass_Header, ShadeStateFromInteraction(highlighted, held && highlighted, selected));
         }
         if (g.NavId == id)
         {
@@ -8919,7 +8923,7 @@ int ImGui::PlotEx(ImGuiPlotType plot_type, const char* label, float (*values_get
             scale_max = v_max;
     }
 
-    RenderFrame(frame_bb.Min, frame_bb.Max, GetColorU32(ImGuiCol_FrameBg), true, style.FrameRounding);
+    RenderFrameShaded(frame_bb.Min, frame_bb.Max, GetColorU32(ImGuiCol_FrameBg), true, style.FrameRounding, ImGuiShadeClass_Frame);
 
     const int values_count_min = (plot_type == ImGuiPlotType_Lines) ? 2 : 1;
     int idx_hovered = -1;
@@ -10859,7 +10863,12 @@ bool    ImGui::TabItemEx(ImGuiTabBar* tab_bar, const char* label, bool* p_open, 
     {
         ImDrawList* display_draw_list = window->DrawList;
         const ImU32 tab_col = GetColorU32((held || hovered) ? ImGuiCol_TabHovered : tab_contents_visible ? (tab_bar_focused ? ImGuiCol_TabSelected : ImGuiCol_TabDimmedSelected) : (tab_bar_focused ? ImGuiCol_Tab : ImGuiCol_TabDimmed));
-        TabItemBackground(display_draw_list, bb, flags, tab_col);
+        // Modularity: selected and unselected tabs are separate shade classes so a theme can raise
+        // the active tab out of the strip. A tab in an unfocused tab bar uses the _Disabled state,
+        // which is where a theme puts its "dimmed" shading.
+        const ImGuiShadeClass tab_shade_class = tab_contents_visible ? ImGuiShadeClass_TabActive : ImGuiShadeClass_Tab;
+        const ImGuiShadeState tab_shade_state = held ? ImGuiShadeState_Active : hovered ? ImGuiShadeState_Hovered : tab_bar_focused ? ImGuiShadeState_Normal : ImGuiShadeState_Disabled;
+        TabItemBackground(display_draw_list, bb, flags, tab_col, tab_shade_class, tab_shade_state);
         if (tab_contents_visible && (tab_bar->Flags & ImGuiTabBarFlags_DrawSelectedOverline) && style.TabBarOverlineSize > 0.0f)
         {
             // Might be moved to TabItemBackground() ?
@@ -10972,7 +10981,7 @@ ImVec2 ImGui::TabItemCalcSize(ImGuiWindow* window)
     return TabItemCalcSize(window->Name, window->HasCloseButton || (window->Flags & ImGuiWindowFlags_UnsavedDocument));
 }
 
-void ImGui::TabItemBackground(ImDrawList* draw_list, const ImRect& bb, ImGuiTabItemFlags flags, ImU32 col)
+void ImGui::TabItemBackground(ImDrawList* draw_list, const ImRect& bb, ImGuiTabItemFlags flags, ImU32 col, ImGuiShadeClass shade_class, ImGuiShadeState shade_state)
 {
     // While rendering tabs, we trim 1 pixel off the top of our bounding box so they can fit within a regular frame height while looking "detached" from it.
     ImGuiContext& g = *GImGui;
@@ -10982,11 +10991,42 @@ void ImGui::TabItemBackground(ImDrawList* draw_list, const ImRect& bb, ImGuiTabI
     const float rounding = ImMax(0.0f, ImMin((flags & ImGuiTabItemFlags_Button) ? g.Style.FrameRounding : g.Style.TabRounding, width * 0.5f - 1.0f));
     const float y1 = bb.Min.y + 1.0f;
     const float y2 = bb.Max.y - g.Style.TabBarBorderSize;
+    // Modularity: a tab is a custom path (rounded on top, square at the bottom), so it cannot go
+    // through ShadeRect(). Shade the path's own vertices instead, then add the bevel by hand.
+    const int vtx_begin = draw_list->VtxBuffer.Size;
     draw_list->PathLineTo(ImVec2(bb.Min.x, y2));
     draw_list->PathArcToFast(ImVec2(bb.Min.x + rounding, y1 + rounding), rounding, 6, 9);
     draw_list->PathArcToFast(ImVec2(bb.Max.x - rounding, y1 + rounding), rounding, 9, 12);
     draw_list->PathLineTo(ImVec2(bb.Max.x, y2));
     draw_list->PathFillConvex(col);
+
+    const ImGuiShadeTheme& shade_theme = GetShadeTheme();
+    if (shade_theme.Enabled)
+    {
+        const ImGuiShadeParams& shade = GetShadeParams(shade_class, shade_state);
+        if ((shade.Flags & ImGuiShadeFlags_NoGradient) == 0 && (shade.GradientTop != 0.0f || shade.GradientBottom != 0.0f)
+            && (col & IM_COL32_A_MASK) != 0 && draw_list->VtxBuffer.Size > vtx_begin && shade_theme.GradientScale > 0.0f)
+        {
+            const ImU32 col_top = ShadeAdjustColor(col, shade.GradientTop * shade_theme.GradientScale);
+            const ImU32 col_bot = ShadeAdjustColor(col, shade.GradientBottom * shade_theme.GradientScale);
+            if (col_top != col_bot)
+                ShadeVertsLinearColorGradientKeepAlpha(draw_list, vtx_begin, draw_list->VtxBuffer.Size, ImVec2(bb.Min.x, y1), ImVec2(bb.Min.x, y2), col_top, col_bot);
+        }
+        const float bevel_thickness = (shade.BevelSize > 0.0f) ? ImMax(1.0f, IM_TRUNC(shade.BevelSize * ImMax(shade_theme.Scale, 0.01f))) : 0.0f;
+        const float bevel_intensity = ImClamp(shade.BevelIntensity * shade_theme.BevelScale, 0.0f, 4.0f);
+        if ((shade.Flags & ImGuiShadeFlags_NoBevel) == 0 && bevel_thickness > 0.0f && bevel_intensity > 0.0f && (y2 - y1) > bevel_thickness * 2.0f)
+        {
+            const bool recessed = (shade.Flags & ImGuiShadeFlags_Recessed) != 0;
+            ImU32 col_top = shade.ColTopHighlight;
+            if (col_top == 0)
+                col_top = recessed ? IM_COL32(0, 0, 0, 56) : IM_COL32(255, 255, 255, 38);
+            col_top = (col_top & ~IM_COL32_A_MASK) | ((ImU32)ImClamp((int)(((col_top >> IM_COL32_A_SHIFT) & 0xFF) * bevel_intensity + 0.5f), 0, 255) << IM_COL32_A_SHIFT);
+            const float x_inset = rounding * 0.60f + bevel_thickness;
+            if (bb.Max.x - x_inset > bb.Min.x + x_inset && (col_top & IM_COL32_A_MASK) != 0)
+                draw_list->AddLine(ImVec2(bb.Min.x + x_inset, y1 + bevel_thickness * 0.5f), ImVec2(bb.Max.x - x_inset, y1 + bevel_thickness * 0.5f), col_top, bevel_thickness);
+        }
+    }
+
     if (g.Style.TabBorderSize > 0.0f)
     {
         draw_list->PathLineTo(ImVec2(bb.Min.x + 0.5f, y2));

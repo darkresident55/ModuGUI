@@ -2421,6 +2421,10 @@ struct ImGuiContext
     // Modularity: named image icons for tab items and menu items (see ImGui::SetNamedIcon in imgui.h)
     ImVector<ImGuiNamedIcon> NamedIcons;                        // Small and rarely written, so a flat vector beats a map here
 
+    // Modularity: widget shading (see ImGuiShadeTheme in imgui.h)
+    ImGuiShadeTheme         ShadeTheme;                         // Theme as authored, with the inheritance flags still on it
+    ImGuiShadeParams        ShadeResolved[ImGuiShadeClass_COUNT][ImGuiShadeState_COUNT]; // Same theme flattened. What the widgets actually read.
+
     // Inputs
     ImVector<ImGuiInputEvent> InputEventsQueue;                 // Input events which will be trickled/written into IO structure.
     ImVector<ImGuiInputEvent> InputEventsTrail;                 // Past input events processed in NewFrame(). This is to allow domain-specific application to access e.g mouse/pen trail.
@@ -3892,7 +3896,7 @@ namespace ImGui
     IMGUI_API void          TabItemSpacing(const char* str_id, ImGuiTabItemFlags flags, float width);
     IMGUI_API ImVec2        TabItemCalcSize(const char* label, bool has_close_button_or_unsaved_marker);
     IMGUI_API ImVec2        TabItemCalcSize(ImGuiWindow* window);
-    IMGUI_API void          TabItemBackground(ImDrawList* draw_list, const ImRect& bb, ImGuiTabItemFlags flags, ImU32 col);
+    IMGUI_API void          TabItemBackground(ImDrawList* draw_list, const ImRect& bb, ImGuiTabItemFlags flags, ImU32 col, ImGuiShadeClass shade_class = ImGuiShadeClass_Tab, ImGuiShadeState shade_state = ImGuiShadeState_Normal); // Modularity: trailing shade args, defaulted so existing callers are unaffected.
     IMGUI_API void          TabItemLabelAndCloseButton(ImDrawList* draw_list, const ImRect& bb, ImGuiTabItemFlags flags, ImVec2 frame_padding, const char* label, ImGuiID tab_id, ImGuiID close_button_id, bool is_contents_visible, bool* out_just_closed, bool* out_text_clipped);
 
     // Modularity: named image icons (see ImGui::SetNamedIcon in imgui.h)
@@ -3907,6 +3911,8 @@ namespace ImGui
     IMGUI_API void          RenderTextClippedEx(ImDrawList* draw_list, const ImVec2& pos_min, const ImVec2& pos_max, const char* text, const char* text_end, const ImVec2* text_size_if_known, const ImVec2& align = ImVec2(0, 0), const ImRect* clip_rect = NULL);
     IMGUI_API void          RenderTextEllipsis(ImDrawList* draw_list, const ImVec2& pos_min, const ImVec2& pos_max, float ellipsis_max_x, const char* text, const char* text_end, const ImVec2* text_size_if_known);
     IMGUI_API void          RenderFrame(ImVec2 p_min, ImVec2 p_max, ImU32 fill_col, bool borders = true, float rounding = 0.0f);
+    IMGUI_API void          RenderFrameShaded(ImVec2 p_min, ImVec2 p_max, ImU32 fill_col, bool borders, float rounding, ImGuiShadeClass shade_class, ImGuiShadeState shade_state = ImGuiShadeState_Normal, ImDrawFlags draw_flags = 0); // Modularity: RenderFrame() that knows what it is drawing. See imgui.h "[SECTION] Modularity: widget shading".
+    IMGUI_API void          ShadeResolveTheme(const ImGuiShadeTheme& src, ImGuiShadeParams out[ImGuiShadeClass_COUNT][ImGuiShadeState_COUNT]); // Modularity: flatten the inheritance chain into the lookup table read by the widgets.
     IMGUI_API void          RenderFrameBorder(ImVec2 p_min, ImVec2 p_max, float rounding = 0.0f);
     IMGUI_API void          RenderColorRectWithAlphaCheckerboard(ImDrawList* draw_list, ImVec2 p_min, ImVec2 p_max, ImU32 fill_col, float grid_step, ImVec2 grid_off, float rounding = 0.0f, ImDrawFlags flags = 0);
     IMGUI_API void          RenderNavCursor(const ImRect& bb, ImGuiID id, ImGuiNavRenderCursorFlags flags = ImGuiNavRenderCursorFlags_None); // Navigation highlight
