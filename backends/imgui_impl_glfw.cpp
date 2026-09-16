@@ -222,6 +222,8 @@ struct ImGui_ImplGlfw_Data
     ImVec2                  LastValidMousePos;
     GLFWwindow*             KeyOwnerWindows[GLFW_KEY_LAST];
     bool                    IsWayland;
+    int                     MonitorsGeneration;     // Value of g_MonitorsGeneration when Monitors was last filled
+    double                  MonitorsUpdateTime;     // glfwGetTime() of the last monitor refresh
     bool                    InstalledCallbacks;
     bool                    CallbacksChainForAllWindows;
     char                    BackendPlatformName[32];
@@ -585,9 +587,16 @@ void ImGui_ImplGlfw_CharCallback(GLFWwindow* window, unsigned int c)
     io.AddInputCharacter(c);
 }
 
+// [Modularity] Enumerating monitors costs several X11 server round trips (video mode, CRTC info,
+// work area), which made up a large share of an editor frame on a 2-thread laptop. The list is
+// refreshed when GLFW reports a monitor change, plus a slow periodic refresh for changes GLFW has
+// no callback for (work area, e.g. a panel resizing). A counter rather than a per-context flag so
+// every Dear ImGui context sees the change.
+static int g_MonitorsGeneration = 1;
+
 void ImGui_ImplGlfw_MonitorCallback(GLFWmonitor*, int)
 {
-    // This function is technically part of the API even if we stopped using the callback, so leaving it around.
+    g_MonitorsGeneration++;
 }
 
 #ifdef EMSCRIPTEN_USE_EMBEDDED_GLFW3
@@ -866,10 +875,12 @@ static void ImGui_ImplGlfw_UpdateMouseData()
         ImGuiViewport* viewport = platform_io.Viewports[n];
         GLFWwindow* window = (GLFWwindow*)viewport->PlatformHandle;
 
+        // [Modularity] Focus is a server round trip on X11; only ask when the answer is used.
+        const bool needs_focus_state = io.WantSetMousePos || bd->MouseWindow == nullptr;
 #ifdef EMSCRIPTEN_USE_EMBEDDED_GLFW3
         const bool is_window_focused = true;
 #else
-        const bool is_window_focused = glfwGetWindowAttrib(window, GLFW_FOCUSED) != 0;
+        const bool is_window_focused = needs_focus_state && glfwGetWindowAttrib(window, GLFW_FOCUSED) != 0;
 #endif
         if (is_window_focused)
         {
@@ -913,7 +924,15 @@ static void ImGui_ImplGlfw_UpdateMouseData()
         glfwSetWindowAttrib(window, GLFW_MOUSE_PASSTHROUGH, window_no_input);
 #endif
 #if GLFW_HAS_MOUSE_PASSTHROUGH || GLFW_HAS_WINDOW_HOVERED
-        if (glfwGetWindowAttrib(window, GLFW_HOVERED))
+        // [Modularity] GLFW_HOVERED walks the X11 window tree with a round trip (plus an XSync) per
+        // level. Dear ImGui only reads the hovered viewport with multi-viewports enabled, so
+        // otherwise report the cursor-enter state GLFW already tracks.
+        if (!(io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable))
+        {
+            if (bd->MouseWindow == window)
+                mouse_viewport_id = viewport->ID;
+        }
+        else if (glfwGetWindowAttrib(window, GLFW_HOVERED))
             mouse_viewport_id = viewport->ID;
 #else
         // We cannot use bd->MouseWindow maintained from CursorEnter/Leave callbacks, because it is locked to the window capturing mouse.
@@ -1009,6 +1028,11 @@ static void ImGui_ImplGlfw_UpdateGamepads()
 static void ImGui_ImplGlfw_UpdateMonitors()
 {
     ImGuiPlatformIO& platform_io = ImGui::GetPlatformIO();
+    if (ImGui_ImplGlfw_Data* bd = ImGui_ImplGlfw_GetBackendData())
+    {
+        bd->MonitorsGeneration = g_MonitorsGeneration;
+        bd->MonitorsUpdateTime = glfwGetTime();
+    }
 
     int monitors_count = 0;
     GLFWmonitor** glfw_monitors = glfwGetMonitors(&monitors_count);
@@ -1107,11 +1131,16 @@ void ImGui_ImplGlfw_NewFrame()
 
     // Setup main viewport size (every frame to accommodate for window resizing)
     ImGui_ImplGlfw_GetWindowSizeAndFramebufferScale(bd->Window, &io.DisplaySize, &io.DisplayFramebufferScale);
-    ImGui_ImplGlfw_UpdateMonitors();
+
+    double current_time = glfwGetTime();
+    const double kMonitorsRefreshInterval = 2.0;
+    if (bd->MonitorsGeneration != g_MonitorsGeneration ||
+        current_time - bd->MonitorsUpdateTime >= kMonitorsRefreshInterval ||
+        current_time < bd->MonitorsUpdateTime)
+        ImGui_ImplGlfw_UpdateMonitors();
 
     // Setup time step
     // (Accept glfwGetTime() not returning a monotonically increasing value. Seems to happens on disconnecting peripherals and probably on VMs and Emscripten, see #6491, #6189, #6114, #3644)
-    double current_time = glfwGetTime();
     if (current_time <= bd->Time)
         current_time = bd->Time + 0.00001f;
     io.DeltaTime = bd->Time > 0.0 ? (float)(current_time - bd->Time) : (float)(1.0f / 60.0f);

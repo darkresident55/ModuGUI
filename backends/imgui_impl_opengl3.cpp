@@ -253,6 +253,8 @@ struct ImGui_ImplOpenGL3_Data
     bool            HasClipOrigin;
     bool            UseBufferSubData;
     ImVector<char>  TempBuffer;
+    ImVector<ImDrawVert> MergedVtxBuffer;   // [Modularity] All draw lists of a frame, uploaded at once
+    ImVector<ImDrawIdx>  MergedIdxBuffer;
 
     ImGui_ImplOpenGL3_Data() { memset((void*)this, 0, sizeof(*this)); }
 };
@@ -607,9 +609,55 @@ void    ImGui_ImplOpenGL3_RenderDrawData(ImDrawData* draw_data)
     ImVec2 clip_off = draw_data->DisplayPos;         // (0,0) unless using multi-viewports
     ImVec2 clip_scale = draw_data->FramebufferScale; // (1,1) unless using retina display which are often (2,2)
 
+    // [Modularity] Upload every draw list's vertices and indices in one glBufferData() pair instead of
+    // one pair per draw list. Each glBufferData() replaces the buffer storage, and an editor frame
+    // holds dozens of draw lists, so the per-list path cost a measurable share of a frame in the
+    // driver on low-end iGPUs. Still plain glBufferData() (see the notes below on glBufferSubData),
+    // with draws addressed by index offset + base vertex, so it needs GL 3.2+ (desktop).
+    bool merged_upload = false;
+#ifdef IMGUI_IMPL_OPENGL_MAY_HAVE_VTX_OFFSET
+    merged_upload = !bd->UseBufferSubData && bd->GlVersion >= 320 && draw_data->CmdLists.Size > 1;
+#endif
+    if (merged_upload)
+    {
+        // Sized from the lists rather than TotalVtxCount/TotalIdxCount, which go stale if a list is
+        // edited after ImGui::Render().
+        int total_vtx_count = 0;
+        int total_idx_count = 0;
+        for (const ImDrawList* draw_list : draw_data->CmdLists)
+        {
+            total_vtx_count += draw_list->VtxBuffer.Size;
+            total_idx_count += draw_list->IdxBuffer.Size;
+        }
+        bd->MergedVtxBuffer.resize(total_vtx_count);
+        bd->MergedIdxBuffer.resize(total_idx_count);
+        ImDrawVert* vtx_dst = bd->MergedVtxBuffer.Data;
+        ImDrawIdx* idx_dst = bd->MergedIdxBuffer.Data;
+        for (const ImDrawList* draw_list : draw_data->CmdLists)
+        {
+            memcpy(vtx_dst, draw_list->VtxBuffer.Data, (size_t)draw_list->VtxBuffer.Size * sizeof(ImDrawVert));
+            memcpy(idx_dst, draw_list->IdxBuffer.Data, (size_t)draw_list->IdxBuffer.Size * sizeof(ImDrawIdx));
+            vtx_dst += draw_list->VtxBuffer.Size;
+            idx_dst += draw_list->IdxBuffer.Size;
+        }
+        GL_CALL(glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)bd->MergedVtxBuffer.Size * (int)sizeof(ImDrawVert), (const GLvoid*)bd->MergedVtxBuffer.Data, GL_STREAM_DRAW));
+        GL_CALL(glBufferData(GL_ELEMENT_ARRAY_BUFFER, (GLsizeiptr)bd->MergedIdxBuffer.Size * (int)sizeof(ImDrawIdx), (const GLvoid*)bd->MergedIdxBuffer.Data, GL_STREAM_DRAW));
+    }
+    int list_vtx_offset = 0;
+    int list_idx_offset = 0;
+
+    // Skip re-issuing an unchanged texture binding or scissor rectangle between draws. Reset after
+    // user callbacks, which may change either.
+    GLuint bound_texture = 0;
+    bool bound_texture_valid = false;
+    int bound_scissor[4] = { 0, 0, 0, 0 };
+    bool bound_scissor_valid = false;
+
     // Render command lists
     for (const ImDrawList* draw_list : draw_data->CmdLists)
     {
+      if (!merged_upload)
+      {
         // Upload vertex/index buffers
         // - OpenGL drivers are in a very sorry state nowadays....
         //   During 2021 we attempted to switch from glBufferData() to orphaning+glBufferSubData() following reports
@@ -640,6 +688,7 @@ void    ImGui_ImplOpenGL3_RenderDrawData(ImDrawData* draw_data)
             GL_CALL(glBufferData(GL_ARRAY_BUFFER, vtx_buffer_size, (const GLvoid*)draw_list->VtxBuffer.Data, GL_STREAM_DRAW));
             GL_CALL(glBufferData(GL_ELEMENT_ARRAY_BUFFER, idx_buffer_size, (const GLvoid*)draw_list->IdxBuffer.Data, GL_STREAM_DRAW));
         }
+      }
 
         for (int cmd_i = 0; cmd_i < draw_list->CmdBuffer.Size; cmd_i++)
         {
@@ -652,6 +701,8 @@ void    ImGui_ImplOpenGL3_RenderDrawData(ImDrawData* draw_data)
                     ImGui_ImplOpenGL3_SetupRenderState(draw_data, fb_width, fb_height, vertex_array_object);
                 else
                     pcmd->UserCallback(draw_list, pcmd);
+                bound_texture_valid = false;
+                bound_scissor_valid = false;
             }
             else
             {
@@ -662,18 +713,34 @@ void    ImGui_ImplOpenGL3_RenderDrawData(ImDrawData* draw_data)
                     continue;
 
                 // Apply scissor/clipping rectangle (Y is inverted in OpenGL)
-                GL_CALL(glScissor((int)clip_min.x, (int)((float)fb_height - clip_max.y), (int)(clip_max.x - clip_min.x), (int)(clip_max.y - clip_min.y)));
+                const int scissor[4] = { (int)clip_min.x, (int)((float)fb_height - clip_max.y), (int)(clip_max.x - clip_min.x), (int)(clip_max.y - clip_min.y) };
+                if (!bound_scissor_valid || memcmp(scissor, bound_scissor, sizeof(scissor)) != 0)
+                {
+                    GL_CALL(glScissor(scissor[0], scissor[1], scissor[2], scissor[3]));
+                    memcpy(bound_scissor, scissor, sizeof(scissor));
+                    bound_scissor_valid = true;
+                }
 
                 // Bind texture, Draw
-                GL_CALL(glBindTexture(GL_TEXTURE_2D, (GLuint)(intptr_t)pcmd->GetTexID()));
+                const GLuint texture = (GLuint)(intptr_t)pcmd->GetTexID();
+                if (!bound_texture_valid || texture != bound_texture)
+                {
+                    GL_CALL(glBindTexture(GL_TEXTURE_2D, texture));
+                    bound_texture = texture;
+                    bound_texture_valid = true;
+                }
 #ifdef IMGUI_IMPL_OPENGL_MAY_HAVE_VTX_OFFSET
-                if (bd->GlVersion >= 320)
+                if (merged_upload)
+                    GL_CALL(glDrawElementsBaseVertex(GL_TRIANGLES, (GLsizei)pcmd->ElemCount, sizeof(ImDrawIdx) == 2 ? GL_UNSIGNED_SHORT : GL_UNSIGNED_INT, (void*)(intptr_t)(((size_t)list_idx_offset + pcmd->IdxOffset) * sizeof(ImDrawIdx)), (GLint)(list_vtx_offset + (int)pcmd->VtxOffset)));
+                else if (bd->GlVersion >= 320)
                     GL_CALL(glDrawElementsBaseVertex(GL_TRIANGLES, (GLsizei)pcmd->ElemCount, sizeof(ImDrawIdx) == 2 ? GL_UNSIGNED_SHORT : GL_UNSIGNED_INT, (void*)(intptr_t)(pcmd->IdxOffset * sizeof(ImDrawIdx)), (GLint)pcmd->VtxOffset));
                 else
 #endif
                 GL_CALL(glDrawElements(GL_TRIANGLES, (GLsizei)pcmd->ElemCount, sizeof(ImDrawIdx) == 2 ? GL_UNSIGNED_SHORT : GL_UNSIGNED_INT, (void*)(intptr_t)(pcmd->IdxOffset * sizeof(ImDrawIdx))));
             }
         }
+        list_vtx_offset += draw_list->VtxBuffer.Size;
+        list_idx_offset += draw_list->IdxBuffer.Size;
     }
 
     // Destroy the temporary VAO
