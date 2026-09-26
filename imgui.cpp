@@ -4188,6 +4188,11 @@ ImGuiContext::ImGuiContext(ImFontAtlas* shared_font_atlas)
     // lookup table is valid from the very first widget.
     ImGui::ShadeResolveTheme(ShadeTheme, ShadeResolved);
 
+    // Modularity: widget feedback reports nothing until the app sets a callback.
+    WidgetFeedbackCallback = NULL;
+    WidgetFeedbackUserData = NULL;
+    WidgetFeedbackHoverId = 0;
+
     InputEventsNextMouseSource = ImGuiMouseSource_Mouse;
     InputEventsNextEventId = 1;
 
@@ -5735,6 +5740,10 @@ void ImGui::NewFrame()
         g.HoveredIdNotActiveTimer += g.IO.DeltaTime;
     g.HoveredIdPreviousFrame = g.HoveredId;
     g.HoveredIdPreviousFrameItemCount = 0;
+    // Modularity: forget the hover we reported once the pointer has left that widget, so coming
+    // back to it reports again.
+    if (g.WidgetFeedbackHoverId != 0 && g.WidgetFeedbackHoverId != g.HoveredIdPreviousFrame)
+        g.WidgetFeedbackHoverId = 0;
     g.HoveredId = 0;
     g.HoveredIdAllowOverlap = false;
     g.HoveredIdIsDisabled = false;
@@ -7437,6 +7446,42 @@ void ImGui::SetGlassBlurRenderer(ImDrawCallback capture_callback, void* callback
     g.GlassBlurCallback = capture_callback;
     g.GlassBlurCallbackUserData = callback_user_data;
     g.GlassBlurTexture = blur_texture;
+}
+
+// Modularity: widget feedback events. See the comment in imgui.h.
+void ImGui::SetWidgetFeedbackCallback(ImGuiWidgetFeedbackCallback callback, void* user_data)
+{
+    ImGuiContext& g = *GImGui;
+    g.WidgetFeedbackCallback = callback;
+    g.WidgetFeedbackUserData = user_data;
+}
+
+void ImGui::ReportWidgetFeedback(ImGuiWidgetFeedback event)
+{
+    // App code (a file browser model, say) may report outside any frame, so no context is fine.
+    ImGuiContext* ctx = GImGui;
+    if (ctx && ctx->WidgetFeedbackCallback && event > ImGuiWidgetFeedback_None && event < ImGuiWidgetFeedback_COUNT)
+        ctx->WidgetFeedbackCallback(event, ctx->WidgetFeedbackUserData);
+}
+
+void ImGui::ReportHoverFeedback(ImGuiID id, bool hovered)
+{
+    ImGuiContext& g = *GImGui;
+    if (!hovered || id == 0 || !g.WidgetFeedbackCallback || g.WidgetFeedbackHoverId == id)
+        return;
+    g.WidgetFeedbackHoverId = id;
+    // Only the pointer arriving counts. Content scrolling or reflowing under a still pointer
+    // (mouse wheel over a list, a popup opening under the cursor) marks the widget as seen, silently.
+    if (g.IO.MouseDelta.x == 0.0f && g.IO.MouseDelta.y == 0.0f)
+        return;
+    ReportWidgetFeedback(ImGuiWidgetFeedback_Hover);
+}
+
+void ImGui::ReportItemHoverFeedback()
+{
+    ImGuiContext& g = *GImGui;
+    if (g.WidgetFeedbackCallback)
+        ReportHoverFeedback(g.LastItemData.ID, IsItemHovered());
 }
 
 // Modularity: named image icon registry. See the big comment in imgui.h.
@@ -13468,11 +13513,26 @@ static bool StartAnimatedPopupCloseToLevel(int remaining, bool restore_focus_to_
         ImGuiPopupData& popup = g.OpenPopupStack[n];
         if (!IsAnimatedPopup(popup))
             continue;
+        // Modularity: widget feedback as the close animation starts, once, and only for a
+        // popup whose opening was reported (so a popup that never drew stays silent).
+        if (!popup.PopupAnimClosing && popup.FeedbackOpenReported)
+            ImGui::ReportWidgetFeedback(IsAnimatedModalPopup(popup) ? ImGuiWidgetFeedback_ModalClose : ImGuiWidgetFeedback_SlideClose);
         popup.PopupAnimClosing = true;
         popup.PopupAnimRestoreFocus = restore_focus_to_window_under_popup;
         started_animation = true;
     }
     return started_animation;
+}
+
+// Modularity: widget feedback for a popup whose window just began. Keyed on a per-opening flag
+// rather than PopupAnimVisibility, which UpdateAnimatedPopupState() snaps to 1 for a popup
+// opened after its BeginPopup() call site had already run that frame.
+static void ReportPopupOpenedOnce(ImGuiPopupData& popup)
+{
+    if (popup.FeedbackOpenReported || popup.PopupAnimClosing)
+        return;
+    popup.FeedbackOpenReported = true;
+    ImGui::ReportWidgetFeedback(IsAnimatedModalPopup(popup) ? ImGuiWidgetFeedback_ModalOpen : ImGuiWidgetFeedback_SlideOpen);
 }
 
 void ImGui::ClosePopupToLevel(int remaining, bool restore_focus_to_window_under_popup)
@@ -13578,6 +13638,7 @@ bool ImGui::BeginPopupEx(ImGuiID id, ImGuiWindowFlags extra_window_flags)
         ImGuiPopupData& popup_ref = g.OpenPopupStack[g.BeginPopupStack.Size - 1];
         if (popup_ref.PopupAnimVisibility <= 0.0f && !popup_ref.PopupAnimClosing)
             popup_ref.PopupAnimVisibility = ImMin(1.0f, g.IO.DeltaTime / IMGUI_MODAL_POPUP_ANIM_OPEN_DURATION);
+        ReportPopupOpenedOnce(popup_ref);
         if (popup_ref.PopupAnimClosing)
             g.CurrentWindow->Flags |= ImGuiWindowFlags_NoInputs;
     }
@@ -13605,6 +13666,7 @@ bool ImGui::BeginPopupMenuEx(ImGuiID id, const char* label, ImGuiWindowFlags ext
         ImGuiPopupData& popup_ref = g.OpenPopupStack[g.BeginPopupStack.Size - 1];
         if (popup_ref.PopupAnimVisibility <= 0.0f && !popup_ref.PopupAnimClosing)
             popup_ref.PopupAnimVisibility = ImMin(1.0f, g.IO.DeltaTime / IMGUI_MODAL_POPUP_ANIM_OPEN_DURATION);
+        ReportPopupOpenedOnce(popup_ref);
         if (popup_ref.PopupAnimClosing)
             g.CurrentWindow->Flags |= ImGuiWindowFlags_NoInputs;
     }
@@ -13661,9 +13723,14 @@ bool ImGui::BeginPopupModal(const char* name, bool* p_open, ImGuiWindowFlags fla
     ImGuiPopupData& popup_ref = g.OpenPopupStack[g.BeginPopupStack.Size - 1];
     if (popup_ref.PopupAnimVisibility <= 0.0f && !popup_ref.PopupAnimClosing)
         popup_ref.PopupAnimVisibility = ImMin(1.0f, g.IO.DeltaTime / IMGUI_MODAL_POPUP_ANIM_OPEN_DURATION);
+    ReportPopupOpenedOnce(popup_ref);
 
     if (p_open && !*p_open)
     {
+        // Modularity: the title-bar close button starts the close animation here, not through
+        // ClosePopupToLevel(). p_open stays false for every frame of it, so report the first only.
+        if (!popup_ref.PopupAnimClosing && popup_ref.FeedbackOpenReported)
+            ReportWidgetFeedback(ImGuiWidgetFeedback_ModalClose);
         popup_ref.PopupAnimClosing = true;
         popup_ref.PopupAnimRestoreFocus = true;
     }

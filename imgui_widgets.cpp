@@ -800,6 +800,28 @@ bool ImGui::ButtonBehavior(const ImRect& bb, ImGuiID id, bool* out_hovered, bool
     return pressed;
 }
 
+// Modularity: widget feedback for the stock buttons (see ImGui::SetWidgetFeedbackCallback in
+// imgui.h). Hover once per arrival; a repeat button reports its first press only, and a click on
+// a button inside BeginDisabled() reports ButtonDisabled. Call right after ButtonBehavior(),
+// while the button is still the last item.
+static void ReportButtonFeedback(ImGuiID id, bool pressed, bool hovered)
+{
+    ImGuiContext& g = *GImGui;
+    if (!g.WidgetFeedbackCallback)
+        return;
+    ImGui::ReportHoverFeedback(id, hovered);
+    if (pressed)
+    {
+        if (!(g.LastItemData.ItemFlags & ImGuiItemFlags_ButtonRepeat) || g.ActiveIdIsJustActivated)
+            ImGui::ReportWidgetFeedback(ImGuiWidgetFeedback_Button);
+    }
+    else if ((g.LastItemData.ItemFlags & ImGuiItemFlags_Disabled) && ImGui::IsMouseClicked(ImGuiMouseButton_Left) &&
+             ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+    {
+        ImGui::ReportWidgetFeedback(ImGuiWidgetFeedback_ButtonDisabled);
+    }
+}
+
 bool ImGui::ButtonEx(const char* label, const ImVec2& size_arg, ImGuiButtonFlags flags)
 {
     ImGuiWindow* window = GetCurrentWindow();
@@ -823,6 +845,7 @@ bool ImGui::ButtonEx(const char* label, const ImVec2& size_arg, ImGuiButtonFlags
 
     bool hovered, held;
     bool pressed = ButtonBehavior(bb, id, &hovered, &held, flags);
+    ReportButtonFeedback(id, pressed, hovered);
 
     // Render
     const ImU32 col = GetColorU32((held && hovered) ? ImGuiCol_ButtonActive : hovered ? ImGuiCol_ButtonHovered : ImGuiCol_Button);
@@ -900,6 +923,7 @@ bool ImGui::ArrowButtonEx(const char* str_id, ImGuiDir dir, ImVec2 size, ImGuiBu
 
     bool hovered, held;
     bool pressed = ButtonBehavior(bb, id, &hovered, &held, flags);
+    ReportButtonFeedback(id, pressed, hovered);
 
     // Render
     const ImU32 bg_col = GetColorU32((held && hovered) ? ImGuiCol_ButtonActive : hovered ? ImGuiCol_ButtonHovered : ImGuiCol_Button);
@@ -1205,6 +1229,7 @@ bool ImGui::ImageButtonEx(ImGuiID id, ImTextureRef tex_ref, const ImVec2& image_
 
     bool hovered, held;
     bool pressed = ButtonBehavior(bb, id, &hovered, &held, flags);
+    ReportButtonFeedback(id, pressed, hovered);
 
     // Render
     const ImU32 col = GetColorU32((held && hovered) ? ImGuiCol_ButtonActive : hovered ? ImGuiCol_ButtonHovered : ImGuiCol_Button);
@@ -1292,6 +1317,7 @@ bool ImGui::Checkbox(const char* label, bool* v)
 
     bool hovered, held;
     bool pressed = ButtonBehavior(total_bb, id, &hovered, &held);
+    ReportHoverFeedback(id, hovered); // Modularity: widget feedback
 
     // Range-Selection/Multi-selection support (footer)
     if (is_multi_select)
@@ -1304,6 +1330,7 @@ bool ImGui::Checkbox(const char* label, bool* v)
         *v = checked;
         pressed = true; // return value
         MarkItemEdited(id);
+        ReportWidgetFeedback(checked ? ImGuiWidgetFeedback_ToggleOn : ImGuiWidgetFeedback_ToggleOff); // Modularity
     }
 
     const ImRect check_bb(pos, pos + ImVec2(check_w, square_sz));
@@ -1471,8 +1498,11 @@ bool ImGui::RadioButton(const char* label, bool active)
 
     bool hovered, held;
     bool pressed = ButtonBehavior(total_bb, id, &hovered, &held);
+    ReportHoverFeedback(id, hovered); // Modularity: widget feedback
     if (pressed)
         MarkItemEdited(id);
+    if (pressed && !active)
+        ReportWidgetFeedback(ImGuiWidgetFeedback_ToggleOn); // Modularity: re-pressing the active option changes nothing
 
     RenderNavCursor(total_bb, id);
     const int num_segment = window->DrawList->_CalcCircleAutoSegmentCount(radius);
@@ -2041,6 +2071,7 @@ bool ImGui::BeginCombo(const char* label, const char* preview_value, ImGuiComboF
     // Open on click
     bool hovered, held;
     bool pressed = ButtonBehavior(bb, id, &hovered, &held);
+    ReportHoverFeedback(id, hovered); // Modularity: widget feedback
     const ImGuiID popup_id = ImHashStr("##ComboPopup", 0, id);
     bool popup_open = IsPopupOpen(popup_id, ImGuiPopupFlags_None);
     if (pressed && !popup_open)
@@ -7113,6 +7144,7 @@ bool ImGui::TreeNodeBehavior(ImGuiID id, ImGuiTreeNodeFlags flags, const char* l
 
     bool hovered, held;
     bool pressed = ButtonBehavior(interact_bb, id, &hovered, &held, button_flags);
+    ReportHoverFeedback(id, hovered); // Modularity: widget feedback
     bool toggled = false;
     if (!is_leaf)
     {
@@ -7152,6 +7184,7 @@ bool ImGui::TreeNodeBehavior(ImGuiID id, ImGuiTreeNodeFlags flags, const char* l
             is_open = !is_open;
             window->DC.StateStorage->SetInt(storage_id, is_open);
             g.LastItemData.StatusFlags |= ImGuiItemStatusFlags_ToggledOpen;
+            ReportWidgetFeedback(is_open ? ImGuiWidgetFeedback_SlideOpen : ImGuiWidgetFeedback_SlideClose); // Modularity
         }
     }
 
@@ -7534,6 +7567,7 @@ bool ImGui::Selectable(const char* label, bool selected, ImGuiSelectableFlags fl
 
     bool hovered, held;
     bool pressed = ButtonBehavior(bb, id, &hovered, &held, button_flags);
+    ReportHoverFeedback(id, hovered); // Modularity: widget feedback
     bool auto_selected = false;
 
     // Multi-selection support (footer)
@@ -7601,6 +7635,11 @@ bool ImGui::Selectable(const char* label, bool selected, ImGuiSelectableFlags fl
     // Text stays at the submission position. Alignment/clipping extents ignore SpanAllColumns.
     if (is_visible)
         RenderTextClipped(pos, ImVec2(ImMin(pos.x + size.x, window->WorkRect.Max.x), pos.y + size.y), label, NULL, &label_size, style.SelectableTextAlign, &bb);
+
+    // Modularity: an item picked from a popup (menu item, combo entry, context menu) is a button
+    // press. Selectables in ordinary windows are list rows and stay silent.
+    if (pressed && !auto_selected && (window->Flags & ImGuiWindowFlags_Popup))
+        ReportWidgetFeedback(ImGuiWidgetFeedback_Button);
 
     // Automatically close popups
     if (pressed && !auto_selected && (window->Flags & ImGuiWindowFlags_Popup) && !(flags & ImGuiSelectableFlags_NoAutoClosePopups) && (g.LastItemData.ItemFlags & ImGuiItemFlags_AutoClosePopups))
@@ -9660,7 +9699,10 @@ bool ImGui::MenuItem(const char* label, const char* shortcut, bool* p_selected, 
     if (MenuItemEx(label, NULL, shortcut, p_selected ? *p_selected : false, enabled))
     {
         if (p_selected)
+        {
             *p_selected = !*p_selected;
+            ReportWidgetFeedback(*p_selected ? ImGuiWidgetFeedback_ToggleOn : ImGuiWidgetFeedback_ToggleOff); // Modularity
+        }
         return true;
     }
     return false;
@@ -10774,8 +10816,19 @@ bool    ImGui::TabItemEx(ImGuiTabBar* tab_bar, const char* label, bool* p_open, 
         hovered = held = pressed = false;
     else
         pressed = ButtonBehavior(bb, id, &hovered, &held, button_flags);
+    ReportHoverFeedback(id, hovered); // Modularity: widget feedback
     if (pressed && !is_tab_button)
+    {
+        // Modularity: widget feedback only when the selection changes. Tabs press on mouse down,
+        // so this also keeps grabbing the active tab to drag it out silent.
+        if (tab_bar->SelectedTabId != id)
+            ReportWidgetFeedback(ImGuiWidgetFeedback_Tab);
         TabBarQueueFocus(tab_bar, tab);
+    }
+    else if (pressed)
+    {
+        ReportWidgetFeedback(ImGuiWidgetFeedback_Button); // Modularity: TabItemButton()
+    }
 
     // Transfer active id window so the active id is not owned by the dock host (as StartMouseMovingWindow()
     // will only do it on the drag). This allows FocusWindow() to be more conservative in how it clears active id.

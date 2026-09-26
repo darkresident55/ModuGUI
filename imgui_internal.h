@@ -1499,6 +1499,7 @@ struct ImGuiPopupData
     float               PopupAnimVisibility; // 0.0..1.0 visibility for animated popups
     bool                PopupAnimClosing; // True while an animated popup is exiting
     bool                PopupAnimRestoreFocus; // Restore focus when delayed close completes
+    bool                FeedbackOpenReported; // Modularity: ImGuiWidgetFeedback open event already sent for this opening
 
     ImGuiPopupData()    { memset(this, 0, sizeof(*this)); ParentNavLayer = OpenFrameCount = -1; }
 };
@@ -2424,6 +2425,11 @@ struct ImGuiContext
     // Modularity: widget shading (see ImGuiShadeTheme in imgui.h)
     ImGuiShadeTheme         ShadeTheme;                         // Theme as authored, with the inheritance flags still on it
     ImGuiShadeParams        ShadeResolved[ImGuiShadeClass_COUNT][ImGuiShadeState_COUNT]; // Same theme flattened. What the widgets actually read.
+
+    // Modularity: widget feedback events (see ImGui::SetWidgetFeedbackCallback in imgui.h)
+    ImGuiWidgetFeedbackCallback WidgetFeedbackCallback;         // NULL = nothing reported
+    void*                   WidgetFeedbackUserData;             // Passed through to the callback untouched
+    ImGuiID                 WidgetFeedbackHoverId;              // Widget whose hover was reported; forgotten in NewFrame() once it is no longer hovered
 
     // Inputs
     ImVector<ImGuiInputEvent> InputEventsQueue;                 // Input events which will be trickled/written into IO structure.
@@ -3911,6 +3917,7 @@ namespace ImGui
     IMGUI_API void          RenderTextClippedEx(ImDrawList* draw_list, const ImVec2& pos_min, const ImVec2& pos_max, const char* text, const char* text_end, const ImVec2* text_size_if_known, const ImVec2& align = ImVec2(0, 0), const ImRect* clip_rect = NULL);
     IMGUI_API void          RenderTextEllipsis(ImDrawList* draw_list, const ImVec2& pos_min, const ImVec2& pos_max, float ellipsis_max_x, const char* text, const char* text_end, const ImVec2* text_size_if_known);
     IMGUI_API void          RenderFrame(ImVec2 p_min, ImVec2 p_max, ImU32 fill_col, bool borders = true, float rounding = 0.0f);
+    IMGUI_API void          ReportHoverFeedback(ImGuiID id, bool hovered); // Modularity: widget feedback Hover, once per arrival. See ReportItemHoverFeedback() in imgui.h.
     IMGUI_API void          RenderFrameShaded(ImVec2 p_min, ImVec2 p_max, ImU32 fill_col, bool borders, float rounding, ImGuiShadeClass shade_class, ImGuiShadeState shade_state = ImGuiShadeState_Normal, ImDrawFlags draw_flags = 0); // Modularity: RenderFrame() that knows what it is drawing. See imgui.h "[SECTION] Modularity: widget shading".
     IMGUI_API void          ShadeResolveTheme(const ImGuiShadeTheme& src, ImGuiShadeParams out[ImGuiShadeClass_COUNT][ImGuiShadeState_COUNT]); // Modularity: flatten the inheritance chain into the lookup table read by the widgets.
     IMGUI_API void          RenderFrameBorder(ImVec2 p_min, ImVec2 p_max, float rounding = 0.0f);

@@ -4459,6 +4459,52 @@ namespace ImGui
 }
 
 //-----------------------------------------------------------------------------
+// [SECTION] Modularity: widget feedback events
+//-----------------------------------------------------------------------------
+// Stock widgets report what the user just did to them - pressed a button, flipped a checkbox,
+// opened a menu or a modal - through one app-side callback. That is how the editor plays UI
+// sounds without every call site asking for one. Nothing is reported until a callback is set,
+// and the callback is per context, so a context that never sets one behaves like stock ImGui.
+//
+// Only state changes report, never plain redraws: a checkbox changed from code or a tree node
+// opened with SetNextItemOpen() stays silent, and a repeat button reports its first press only.
+// Several events can arrive in one frame (a menu item press also closes its menu); the app
+// decides which one to act on.
+//
+// InvisibleButton() never reports on its own: canvases, splitters and drag handles are built on
+// it too. A custom button made from InvisibleButton() calls ReportWidgetFeedback() itself.
+//-----------------------------------------------------------------------------
+
+enum ImGuiWidgetFeedback_
+{
+    ImGuiWidgetFeedback_None = 0,
+    ImGuiWidgetFeedback_Button,         // Button(), SmallButton(), ArrowButton(), ImageButton(); a menu item or a Selectable() picked inside a popup
+    ImGuiWidgetFeedback_ButtonDisabled, // A click on a Button() inside BeginDisabled()
+    ImGuiWidgetFeedback_Tab,            // A tab the user selected (not one that was already selected)
+    ImGuiWidgetFeedback_ToggleOn,       // Checkbox(), RadioButton() or MenuItem(bool*) switched on
+    ImGuiWidgetFeedback_ToggleOff,
+    ImGuiWidgetFeedback_SlideOpen,      // A menu, combo, context menu or other non-modal popup opens; a tree node or collapsing header expands
+    ImGuiWidgetFeedback_SlideClose,
+    ImGuiWidgetFeedback_ModalOpen,      // A modal popup starts its open animation
+    ImGuiWidgetFeedback_ModalClose,     // ... or its close animation
+    ImGuiWidgetFeedback_Select,         // An item picked in a list or grid. Reported by the app: plain Selectable() rows stay silent
+    ImGuiWidgetFeedback_Hover,          // The pointer arrived on a button-like widget (see ReportItemHoverFeedback)
+    ImGuiWidgetFeedback_COUNT
+};
+typedef int ImGuiWidgetFeedback;        // -> enum ImGuiWidgetFeedback_
+typedef void (*ImGuiWidgetFeedbackCallback)(ImGuiWidgetFeedback event, void* user_data);
+
+namespace ImGui
+{
+    IMGUI_API void  SetWidgetFeedbackCallback(ImGuiWidgetFeedbackCallback callback, void* user_data = NULL); // NULL turns reporting off
+    IMGUI_API void  ReportWidgetFeedback(ImGuiWidgetFeedback event);  // For custom widgets. Cheap no-op without a callback or a context.
+    // For custom widgets, right after the item: reports Hover once when the pointer arrives on it.
+    // Buttons, checkboxes, selectables, tree nodes, tabs and combos do this themselves. Only an
+    // actual mouse move counts, so content scrolling under a still pointer stays silent.
+    IMGUI_API void  ReportItemHoverFeedback();
+}
+
+//-----------------------------------------------------------------------------
 // [SECTION] Obsolete functions and types
 // (Will be removed! Read 'API BREAKING CHANGES' section in imgui.cpp for details)
 // Please keep your copy of dear imgui up to date! Occasionally set '#define IMGUI_DISABLE_OBSOLETE_FUNCTIONS' in imconfig.h to stay ahead.
