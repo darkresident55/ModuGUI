@@ -6417,6 +6417,11 @@ ImVec2 ImGui::CalcTextSize(const char* text, const char* text_end, bool hide_tex
 //   with SetWindowPos() and not SetNextWindowPos() will have that rectangle lagging by a frame at the time FindHoveredWindow() is
 //   called, aka before the next Begin(). Moving window isn't affected.
 // - The 'find_first_and_in_any_viewport = true' mode is only used by TestEngine. It is simpler to maintain here.
+void ImGui::SetMouseHitTestRoot(ImGuiID root_id)
+{
+    GImGui->MouseHitTestRoot = root_id;
+}
+
 void ImGui::FindHoveredWindowEx(const ImVec2& pos, bool find_first_and_in_any_viewport, ImGuiWindow** out_hovered_window, ImGuiWindow** out_hovered_window_under_moving_window)
 {
     ImGuiContext& g = *GImGui;
@@ -6439,6 +6444,8 @@ void ImGui::FindHoveredWindowEx(const ImVec2& pos, bool find_first_and_in_any_vi
     {
         ImGuiWindow* window = g.Windows[i];
         IM_MSVC_WARNING_SUPPRESS(28182); // [Static Analyzer] Dereferencing NULL pointer.
+        if (g.MouseHitTestRoot != 0 && window->RootWindowDockTree->ID != g.MouseHitTestRoot)
+            continue;
         if (!window->WasActive || window->Hidden)
             continue;
         if (window->Flags & ImGuiWindowFlags_NoMouseInputs)
