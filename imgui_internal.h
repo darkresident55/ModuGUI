@@ -399,6 +399,7 @@ inline unsigned int     ImCountSetBits(unsigned int v)      { unsigned int count
 // Helpers: String
 #define ImStrlen strlen
 #define ImMemchr memchr
+
 IMGUI_API int           ImStricmp(const char* str1, const char* str2);                      // Case insensitive compare.
 IMGUI_API int           ImStrnicmp(const char* str1, const char* str2, size_t count);       // Case insensitive compare to a certain count.
 IMGUI_API void          ImStrncpy(char* dst, const char* src, size_t count);                // Copy to a certain count and always zero terminate (strncpy doesn't).
@@ -3423,6 +3424,7 @@ namespace ImGui
     inline    ImGuiWindow*  GetCurrentWindow()          { ImGuiContext& g = *GImGui; g.CurrentWindow->WriteAccessed = true; return g.CurrentWindow; }
     IMGUI_API ImGuiWindow*  FindWindowByID(ImGuiID id);
     IMGUI_API ImGuiWindow*  FindWindowByName(const char* name);
+    IMGUI_API void          SetMouseHitTestRoot(ImGuiID root_id);
     IMGUI_API void          UpdateWindowParentAndRootLinks(ImGuiWindow* window, ImGuiWindowFlags flags, ImGuiWindow* parent_window);
     IMGUI_API void          UpdateWindowSkipRefresh(ImGuiWindow* window);
     IMGUI_API ImVec2        CalcWindowNextAutoFitSize(ImGuiWindow* window);

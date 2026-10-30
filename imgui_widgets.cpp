@@ -1337,17 +1337,23 @@ bool ImGui::Checkbox(const char* label, bool* v)
     const bool mixed_value = (g.LastItemData.ItemFlags & ImGuiItemFlags_MixedValue) != 0;
     if (is_visible)
     {
+        // Modularity: animation state is copied out and written back with Set*(), never held as
+        // Get*Ref() pointers. A Ref pointer dies as soon as another key is added to the same
+        // storage (the insert can reallocate it), and the first frame a widget is visible adds
+        // all of its keys - writing through the older pointers then hit freed memory and
+        // corrupted the heap (STATUS_HEAP_CORRUPTION when scrolling new widgets into view).
         ImGuiStorage* storage = window->DC.StateStorage;
-        float* hover_anim = storage->GetFloatRef(id ^ 0x3B49A001, hovered ? 1.0f : 0.0f);
-        float* held_anim = storage->GetFloatRef(id ^ 0x3B49A002, held ? 1.0f : 0.0f);
-        float* mark_anim = storage->GetFloatRef(id ^ 0x3B49A003, *v ? 1.0f : 0.0f);
-        *hover_anim = AnimateWidgetScalar(*hover_anim, hovered ? 1.0f : 0.0f, 18.0f, g.IO.DeltaTime);
-        *held_anim = AnimateWidgetScalar(*held_anim, held ? 1.0f : 0.0f, 24.0f, g.IO.DeltaTime);
-        *mark_anim = AnimateWidgetScalar(*mark_anim, *v ? 1.0f : 0.0f, *v ? 18.0f : 14.0f, g.IO.DeltaTime);
+        const ImGuiID hover_key = id ^ 0x3B49A001, held_key = id ^ 0x3B49A002, mark_key = id ^ 0x3B49A003;
+        const float hover_anim = AnimateWidgetScalar(storage->GetFloat(hover_key, hovered ? 1.0f : 0.0f), hovered ? 1.0f : 0.0f, 18.0f, g.IO.DeltaTime);
+        const float held_anim = AnimateWidgetScalar(storage->GetFloat(held_key, held ? 1.0f : 0.0f), held ? 1.0f : 0.0f, 24.0f, g.IO.DeltaTime);
+        const float mark_anim = AnimateWidgetScalar(storage->GetFloat(mark_key, *v ? 1.0f : 0.0f), *v ? 1.0f : 0.0f, *v ? 18.0f : 14.0f, g.IO.DeltaTime);
+        storage->SetFloat(hover_key, hover_anim);
+        storage->SetFloat(held_key, held_anim);
+        storage->SetFloat(mark_key, mark_anim);
 
-        const float hover_t = ImSaturate(*hover_anim);
-        const float held_t = ImSaturate(*held_anim);
-        const float mark_t = ImSaturate(*mark_anim);
+        const float hover_t = ImSaturate(hover_anim);
+        const float held_t = ImSaturate(held_anim);
+        const float mark_t = ImSaturate(mark_anim);
         const float box_scale = 1.0f + hover_t * 0.055f + held_t * 0.035f;
         const ImRect animated_check_bb = ScaleRectAroundCenter(check_bb, box_scale);
 
@@ -3494,20 +3500,22 @@ bool ImGui::SliderScalar(const char* label, ImGuiDataType data_type, void* p_dat
     {
         ImGuiStorage* storage = window->DC.StateStorage;
         const bool is_active = (g.ActiveId == id);
-        float* hover_anim = storage->GetFloatRef(id ^ 0x51D0A001, hovered ? 1.0f : 0.0f);
-        float* active_anim = storage->GetFloatRef(id ^ 0x51D0A002, is_active ? 1.0f : 0.0f);
-        float* release_anim = storage->GetFloatRef(id ^ 0x51D0A003, 0.0f);
-        bool* was_active = storage->GetBoolRef(id ^ 0x51D0A004, is_active);
-        if (*was_active && !is_active)
-            *release_anim = 1.0f;
-        *was_active = is_active;
-        *hover_anim = AnimateWidgetScalar(*hover_anim, hovered ? 1.0f : 0.0f, 18.0f, g.IO.DeltaTime);
-        *active_anim = AnimateWidgetScalar(*active_anim, is_active ? 1.0f : 0.0f, 24.0f, g.IO.DeltaTime);
-        *release_anim = ImMax(0.0f, *release_anim - g.IO.DeltaTime / 0.22f);
+        // Modularity: copied out and written back, never held as Get*Ref() pointers - see Checkbox().
+        const ImGuiID hover_key = id ^ 0x51D0A001, active_key = id ^ 0x51D0A002, release_key = id ^ 0x51D0A003, was_active_key = id ^ 0x51D0A004;
+        float release_anim = storage->GetFloat(release_key, 0.0f);
+        if (storage->GetBool(was_active_key, is_active) && !is_active)
+            release_anim = 1.0f;
+        const float hover_anim = AnimateWidgetScalar(storage->GetFloat(hover_key, hovered ? 1.0f : 0.0f), hovered ? 1.0f : 0.0f, 18.0f, g.IO.DeltaTime);
+        const float active_anim = AnimateWidgetScalar(storage->GetFloat(active_key, is_active ? 1.0f : 0.0f), is_active ? 1.0f : 0.0f, 24.0f, g.IO.DeltaTime);
+        release_anim = ImMax(0.0f, release_anim - g.IO.DeltaTime / 0.22f);
+        storage->SetFloat(hover_key, hover_anim);
+        storage->SetFloat(active_key, active_anim);
+        storage->SetFloat(release_key, release_anim);
+        storage->SetBool(was_active_key, is_active);
 
-        const float release_phase = 1.0f - ImSaturate(*release_anim);
-        const float release_bounce = sinf(release_phase * IM_PI) * ImSaturate(*release_anim);
-        const float grab_scale = 1.0f + ImSaturate(*hover_anim) * 0.08f + ImSaturate(*active_anim) * 0.14f + release_bounce * 0.06f;
+        const float release_phase = 1.0f - ImSaturate(release_anim);
+        const float release_bounce = sinf(release_phase * IM_PI) * ImSaturate(release_anim);
+        const float grab_scale = 1.0f + ImSaturate(hover_anim) * 0.08f + ImSaturate(active_anim) * 0.14f + release_bounce * 0.06f;
         if (style.SliderPill)
         {
             // Modularity: settings-app slider. thin rounded track, SliderGrabActive fill up
@@ -3685,20 +3693,22 @@ bool ImGui::VSliderScalar(const char* label, const ImVec2& size, ImGuiDataType d
     {
         ImGuiStorage* storage = window->DC.StateStorage;
         const bool is_active = (g.ActiveId == id);
-        float* hover_anim = storage->GetFloatRef(id ^ 0x51D0B001, hovered ? 1.0f : 0.0f);
-        float* active_anim = storage->GetFloatRef(id ^ 0x51D0B002, is_active ? 1.0f : 0.0f);
-        float* release_anim = storage->GetFloatRef(id ^ 0x51D0B003, 0.0f);
-        bool* was_active = storage->GetBoolRef(id ^ 0x51D0B004, is_active);
-        if (*was_active && !is_active)
-            *release_anim = 1.0f;
-        *was_active = is_active;
-        *hover_anim = AnimateWidgetScalar(*hover_anim, hovered ? 1.0f : 0.0f, 18.0f, g.IO.DeltaTime);
-        *active_anim = AnimateWidgetScalar(*active_anim, is_active ? 1.0f : 0.0f, 24.0f, g.IO.DeltaTime);
-        *release_anim = ImMax(0.0f, *release_anim - g.IO.DeltaTime / 0.22f);
+        // Modularity: copied out and written back, never held as Get*Ref() pointers - see Checkbox().
+        const ImGuiID hover_key = id ^ 0x51D0B001, active_key = id ^ 0x51D0B002, release_key = id ^ 0x51D0B003, was_active_key = id ^ 0x51D0B004;
+        float release_anim = storage->GetFloat(release_key, 0.0f);
+        if (storage->GetBool(was_active_key, is_active) && !is_active)
+            release_anim = 1.0f;
+        const float hover_anim = AnimateWidgetScalar(storage->GetFloat(hover_key, hovered ? 1.0f : 0.0f), hovered ? 1.0f : 0.0f, 18.0f, g.IO.DeltaTime);
+        const float active_anim = AnimateWidgetScalar(storage->GetFloat(active_key, is_active ? 1.0f : 0.0f), is_active ? 1.0f : 0.0f, 24.0f, g.IO.DeltaTime);
+        release_anim = ImMax(0.0f, release_anim - g.IO.DeltaTime / 0.22f);
+        storage->SetFloat(hover_key, hover_anim);
+        storage->SetFloat(active_key, active_anim);
+        storage->SetFloat(release_key, release_anim);
+        storage->SetBool(was_active_key, is_active);
 
-        const float release_phase = 1.0f - ImSaturate(*release_anim);
-        const float release_bounce = sinf(release_phase * IM_PI) * ImSaturate(*release_anim);
-        const float grab_scale = 1.0f + ImSaturate(*hover_anim) * 0.08f + ImSaturate(*active_anim) * 0.14f + release_bounce * 0.06f;
+        const float release_phase = 1.0f - ImSaturate(release_anim);
+        const float release_bounce = sinf(release_phase * IM_PI) * ImSaturate(release_anim);
+        const float grab_scale = 1.0f + ImSaturate(hover_anim) * 0.08f + ImSaturate(active_anim) * 0.14f + release_bounce * 0.06f;
         const ImRect animated_grab_bb = ScaleRectAroundCenter(grab_bb, grab_scale);
         ShadeRect(window->DrawList, animated_grab_bb.Min, animated_grab_bb.Max,
                   GetColorU32(is_active ? ImGuiCol_SliderGrabActive : ImGuiCol_SliderGrab),
